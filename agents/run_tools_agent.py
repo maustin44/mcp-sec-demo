@@ -16,7 +16,8 @@ def run(cmd, allow_fail=False):
 
 def main():
     # Semgrep (SAST)
-    run(["semgrep", "--config", "p/ci", "--json", "-o", str(REPORTS / "semgrep.json")], allow_fail=True)
+    import sys
+    run([sys.executable, "-m", "semgrep", "--config", "p/ci", "--json", "-o", str(REPORTS / "semgrep.json")], allow_fail=True)
 
     # Gitleaks (secrets)
     run(["gitleaks", "detect", "--source", ".", "--report-format", "json", "--report-path", str(REPORTS / "gitleaks.json")],
