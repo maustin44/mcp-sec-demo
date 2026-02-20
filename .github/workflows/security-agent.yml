@@ -1,0 +1,66 @@
+name: MCP Security Agent Demo
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ "main" ]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  scan-and-pr:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install app deps
+        working-directory: app
+        run: npm install
+
+      - name: Install security tools
+        run: |
+          python -m pip install --upgrade pip
+          pip install semgrep
+          curl -sSL https://raw.githubusercontent.com/gitleaks/gitleaks/master/install.sh | sudo bash
+          curl -sSfL https://github.com/google/osv-scanner/releases/latest/download/osv-scanner_linux_amd64 -o osv-scanner
+          chmod +x osv-scanner
+          sudo mv osv-scanner /usr/local/bin/osv-scanner
+
+      - name: Install agent deps
+        run: |
+          pip install -r agents/requirements.txt
+
+      - name: Run Catalog Agent
+        run: python agents/catalog_agent.py
+
+      - name: Run Tools Agent
+        run: python agents/run_tools_agent.py
+
+      - name: Run Triage Agent
+        run: python agents/triage_agent.py
+
+      - name: Create Draft PR with Results
+        uses: peter-evans/create-pull-request@v6
+        with:
+          commit-message: "chore: update catalog and fix list"
+          title: "Security Catalog + Fix List Update"
+          body: |
+            Automated update from security agents:
+            - docs/CATALOG.md
+            - docs/FIX_LIST.md
+            - reports/*.json
+          branch: "security/agent-update"
+          draft: true
