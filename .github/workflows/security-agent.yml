@@ -40,7 +40,7 @@ jobs:
           pip install semgrep
 
           # Install gitleaks + osv-scanner via Go (stable)
-          go install github.com/gitleaks/gitleaks/v8@latest
+          go install go install github.com/zricethezav/gitleaks/v8@latest
           go install github.com/google/osv-scanner/cmd/osv-scanner@latest
 
           # Add Go bin to PATH for subsequent steps
