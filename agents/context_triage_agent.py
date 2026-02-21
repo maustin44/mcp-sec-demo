@@ -37,10 +37,6 @@ DOCS_DIR  = REPO_ROOT / "docs"
 DOCS_DIR.mkdir(exist_ok=True)
 
 
-# ---------------------------------------------------------------------------
-# GitHub helpers
-# ---------------------------------------------------------------------------
-
 def gh_get(path: str) -> dict | list:
     url = f"https://api.github.com{path}"
     req = urllib.request.Request(
@@ -56,8 +52,6 @@ def gh_get(path: str) -> dict | list:
 
 
 def fetch_file_content(owner: str, repo: str, file_path: str) -> str:
-    """Return decoded file content from GitHub (max 8 KB)."""
-    # Normalise Windows-style paths that Semgrep may emit
     file_path = file_path.replace("\\", "/").lstrip("/")
     try:
         data = gh_get(f"/repos/{owner}/{repo}/contents/{file_path}")
@@ -66,10 +60,6 @@ def fetch_file_content(owner: str, repo: str, file_path: str) -> str:
     except Exception as exc:
         return f"(Could not fetch file: {exc})"
 
-
-# ---------------------------------------------------------------------------
-# Report loaders (reuse logic from triage_agent.py)
-# ---------------------------------------------------------------------------
 
 def load_json(path: Path):
     if not path.exists():
@@ -92,7 +82,6 @@ def severity_score(sev: str) -> int:
 def collect_raw_findings(semgrep_data, gitleaks_data, osv_data) -> list[dict]:
     findings = []
 
-    # Semgrep
     if semgrep_data and "results" in semgrep_data:
         for r in semgrep_data["results"]:
             path  = (r.get("path") or "").replace("\\", "/")
@@ -112,7 +101,6 @@ def collect_raw_findings(semgrep_data, gitleaks_data, osv_data) -> list[dict]:
                 "recommendation": "Review code context and apply secure coding fix.",
             })
 
-    # Gitleaks
     if gitleaks_data and isinstance(gitleaks_data, list):
         for r in gitleaks_data:
             findings.append({
@@ -125,7 +113,6 @@ def collect_raw_findings(semgrep_data, gitleaks_data, osv_data) -> list[dict]:
                 "recommendation": "Remove secret, rotate credentials, add pre-commit secret scanning.",
             })
 
-    # OSV
     if osv_data:
         for res in osv_data.get("results", []):
             for p in res.get("packages", []):
@@ -145,15 +132,7 @@ def collect_raw_findings(semgrep_data, gitleaks_data, osv_data) -> list[dict]:
     return findings
 
 
-# ---------------------------------------------------------------------------
-# Claude contextual analysis
-# ---------------------------------------------------------------------------
-
 def claude_analyse(finding: dict, code_context: str) -> dict:
-    """
-    Ask Claude whether a finding is a true or false positive given the
-    actual source code.  Returns {verdict, confidence, reasoning, fix}.
-    """
     if not ANTHROPIC_API_KEY:
         return {
             "verdict": "UNKNOWN",
@@ -186,11 +165,11 @@ Respond ONLY with valid JSON matching this schema:
   "verdict": "TRUE_POSITIVE" | "FALSE_POSITIVE",
   "confidence": "HIGH" | "MEDIUM" | "LOW",
   "reasoning": "...",
-  "fix": "..." 
+  "fix": "..."
 }}"""
 
     body = json.dumps({
-        "model": "claude-sonnet-4-20250514",
+        "model": "claude-haiku-4-5-20251001",
         "max_tokens": 500,
         "messages": [{"role": "user", "content": prompt}],
     }).encode()
@@ -207,9 +186,8 @@ Respond ONLY with valid JSON matching this schema:
     )
     try:
         with urllib.request.urlopen(req) as resp:
-            result  = json.loads(resp.read())
+            result = json.loads(resp.read())
         text = result["content"][0]["text"].strip()
-        # Strip markdown fences if present
         if text.startswith("```"):
             text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
         return json.loads(text)
@@ -221,10 +199,6 @@ Respond ONLY with valid JSON matching this schema:
             "fix": finding["recommendation"],
         }
 
-
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
 
 def main():
     if not GITHUB_TOKEN:
@@ -246,7 +220,6 @@ def main():
     for i, finding in enumerate(raw_findings, 1):
         print(f"  [{i}/{len(raw_findings)}] Analysing: {finding['title'][:70]}...")
 
-        # Fetch code context from GitHub when we have a real file path
         if finding["file"] and finding["file"] != "dependency-manifest":
             code_context = fetch_file_content(owner, repo, finding["file"])
         else:
@@ -260,7 +233,6 @@ def main():
         else:
             true_positives.append(finding)
 
-    # Write filtered fix list
     md = [
         "# Fix List (Context-Filtered)",
         "",

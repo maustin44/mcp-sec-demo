@@ -1,15 +1,8 @@
 """
 fix_pr_agent.py
 ---------------
-Reads the context-filtered FIX_LIST (true positives only) and opens
-draft Pull Requests on GitHub with concrete code fixes:
-
-  - Vulnerable dependencies → bumps version in package.json / requirements.txt
-  - SAST findings           → Claude suggests an inline patch, added as a PR comment
-  - Secret leakage          → opens PR removing the secret + adds .gitignore entry
-
-The agent NEVER merges — it creates draft PRs for human review, matching
-the client's "review-only" requirement from the FFQ.
+Reads confirmed findings and opens draft Pull Requests on GitHub with
+concrete code fixes. Never merges — human review required.
 
 Requires:
   GITHUB_TOKEN       — repo write + pull-requests scope
@@ -37,20 +30,12 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 DOCS_DIR  = REPO_ROOT / "docs"
 REPORTS   = REPO_ROOT / "reports"
 
-BASE_BRANCH = "main"
-
-
-# ---------------------------------------------------------------------------
-# GitHub REST helpers
-# ---------------------------------------------------------------------------
 
 def gh_request(method: str, path: str, body: dict | None = None):
     url  = f"https://api.github.com{path}"
     data = json.dumps(body).encode() if body else None
     req  = urllib.request.Request(
-        url,
-        data=data,
-        method=method,
+        url, data=data, method=method,
         headers={
             "Authorization": f"Bearer {GITHUB_TOKEN}",
             "Accept": "application/vnd.github+json",
@@ -67,7 +52,6 @@ def gh_request(method: str, path: str, body: dict | None = None):
 
 
 def get_file(owner, repo, path, ref="main"):
-    """Returns (decoded_content, sha)."""
     path = path.replace("\\", "/").lstrip("/")
     data = gh_request("GET", f"/repos/{owner}/{repo}/contents/{path}?ref={ref}")
     content = base64.b64decode(data["content"]).decode("utf-8", errors="replace")
@@ -102,21 +86,12 @@ def commit_file(owner, repo, branch, file_path, new_content, message, sha):
 
 def open_draft_pr(owner, repo, title, body, head, base="main") -> str:
     result = gh_request("POST", f"/repos/{owner}/{repo}/pulls", {
-        "title": title,
-        "body": body,
-        "head": head,
-        "base": base,
-        "draft": True,
+        "title": title, "body": body, "head": head, "base": base, "draft": True,
     })
     return result["html_url"]
 
 
-# ---------------------------------------------------------------------------
-# Claude helpers
-# ---------------------------------------------------------------------------
-
 def claude_generate_patch(finding_title: str, file_content: str, location: str) -> str:
-    """Ask Claude to produce a concrete code patch for a SAST finding."""
     if not ANTHROPIC_API_KEY:
         return "(Set ANTHROPIC_API_KEY for AI-generated patches.)"
 
@@ -135,7 +110,7 @@ complete replacement snippet (whichever is cleaner). Include a one-sentence
 explanation of the change. Do not add unnecessary refactoring."""
 
     body = json.dumps({
-        "model": "claude-sonnet-4-20250514",
+        "model": "claude-haiku-4-5-20251001",
         "max_tokens": 800,
         "messages": [{"role": "user", "content": prompt}],
     }).encode()
@@ -155,16 +130,8 @@ explanation of the change. Do not add unnecessary refactoring."""
     return result["content"][0]["text"].strip()
 
 
-# ---------------------------------------------------------------------------
-# Fix strategies
-# ---------------------------------------------------------------------------
-
-def fix_vulnerable_dep(owner: str, repo: str, finding: dict, base_sha: str) -> str | None:
-    """
-    Bump a vulnerable npm or pip dependency and open a draft PR.
-    Extracts package name + CVE from the finding title.
-    """
-    title = finding["title"]  # e.g. "Vulnerable dep: express (GHSA-xxxx)"
+def fix_vulnerable_dep(owner, repo, finding, base_sha):
+    title = finding["title"]
     match = re.search(r"Vulnerable dep:\s*([\w\-\.]+)", title)
     if not match:
         print(f"  Could not parse package name from: {title}")
@@ -174,40 +141,25 @@ def fix_vulnerable_dep(owner: str, repo: str, finding: dict, base_sha: str) -> s
     branch   = f"fix/dep-{pkg_name}-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}"
     create_branch(owner, repo, branch, base_sha)
 
-    # Try package.json first, then requirements.txt
     for manifest_path, is_npm in [("app/package.json", True), ("requirements.txt", False), ("agents/requirements.txt", False)]:
         try:
             content, file_sha = get_file(owner, repo, manifest_path, branch)
         except Exception:
             continue
-
         if pkg_name not in content:
             continue
 
-        # Add a comment in the manifest flagging the vulnerable package
-        # (A full version resolution would require npm/pip APIs — we flag for human review)
-        timestamp = datetime.utcnow().isoformat()
-        if is_npm:
-            # Insert a comment above the dependency line (JSON doesn't support comments,
-            # so we add it to the PR body instead — see below)
-            new_content = content  # unchanged; fix described in PR body
-        else:
-            # For pip, add an inline comment
+        if not is_npm:
             new_content = re.sub(
                 rf"({re.escape(pkg_name)}[^\n]*)",
                 rf"\1  # SECURITY: update this package — see PR description",
-                content,
-                count=1,
+                content, count=1,
             )
-
-        try:
-            commit_file(
-                owner, repo, branch, manifest_path, new_content,
-                f"security: flag vulnerable dependency {pkg_name}",
-                file_sha,
-            )
-        except Exception as exc:
-            print(f"  Commit skipped (no change or error): {exc}")
+            try:
+                commit_file(owner, repo, branch, manifest_path, new_content,
+                            f"security: flag vulnerable dependency {pkg_name}", file_sha)
+            except Exception as exc:
+                print(f"  Commit skipped: {exc}")
 
         pr_body = f"""## 🔒 Vulnerable Dependency: `{pkg_name}`
 
@@ -220,18 +172,12 @@ def fix_vulnerable_dep(owner: str, repo: str, finding: dict, base_sha: str) -> s
 2. Update the version constraint in `{manifest_path}`.
 3. Run your test suite, then merge this PR.
 
-### References
-- {finding.get('recommendation', '')}
-
 ---
 *Auto-generated by fix_pr_agent.py — human review required before merging.*"""
 
-        url = open_draft_pr(
-            owner, repo,
+        url = open_draft_pr(owner, repo,
             title=f"fix(security): update vulnerable dependency `{pkg_name}`",
-            body=pr_body,
-            head=branch,
-        )
+            body=pr_body, head=branch)
         print(f"  Opened draft PR: {url}")
         return url
 
@@ -239,8 +185,7 @@ def fix_vulnerable_dep(owner: str, repo: str, finding: dict, base_sha: str) -> s
     return None
 
 
-def fix_sast_finding(owner: str, repo: str, finding: dict, base_sha: str) -> str | None:
-    """Fetch the flagged file, ask Claude for a patch, open a draft PR."""
+def fix_sast_finding(owner, repo, finding, base_sha):
     file_path = finding.get("file", "")
     if not file_path or file_path == "dependency-manifest":
         return None
@@ -249,7 +194,7 @@ def fix_sast_finding(owner: str, repo: str, finding: dict, base_sha: str) -> str
     create_branch(owner, repo, branch, base_sha)
 
     try:
-        content, file_sha = get_file(owner, repo, file_path, branch)
+        content, _ = get_file(owner, repo, file_path, branch)
     except Exception as exc:
         print(f"  Could not fetch {file_path}: {exc}")
         return None
@@ -268,36 +213,27 @@ def fix_sast_finding(owner: str, repo: str, finding: dict, base_sha: str) -> str
 ### Recommended Fix
 {patch}
 
-### References
-- {finding.get('recommendation', '')}
-
 ---
 *Auto-generated by fix_pr_agent.py — human review required before merging.*"""
 
-    url = open_draft_pr(
-        owner, repo,
+    url = open_draft_pr(owner, repo,
         title=f"fix(security): {finding['title'][:72]}",
-        body=pr_body,
-        head=branch,
-    )
+        body=pr_body, head=branch)
     print(f"  Opened draft PR: {url}")
     return url
 
 
-def fix_secret_finding(owner: str, repo: str, finding: dict, base_sha: str) -> str | None:
-    """Open a PR that adds the leaked file to .gitignore and flags it for rotation."""
+def fix_secret_finding(owner, repo, finding, base_sha):
     file_path = finding.get("file", "")
     branch    = f"fix/secret-leak-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}"
     create_branch(owner, repo, branch, base_sha)
 
-    # Read or create .gitignore
     try:
         gitignore_content, gitignore_sha = get_file(owner, repo, ".gitignore", branch)
     except Exception:
         gitignore_content, gitignore_sha = "", None
 
-    # Add the file to .gitignore if not already there
-    entry = Path(file_path).name  # e.g. ".env"
+    entry = Path(file_path).name
     if entry not in gitignore_content:
         new_gitignore = gitignore_content.rstrip("\n") + f"\n# Added by security agent\n{entry}\n"
         try:
@@ -323,24 +259,16 @@ def fix_secret_finding(owner: str, repo: str, finding: dict, base_sha: str) -> s
 1. **Rotate the credential** — assume it is compromised.
 2. **Remove the secret from git history** using `git filter-repo` or BFG Repo Cleaner.
 3. This PR adds `{entry}` to `.gitignore` to prevent future commits.
-4. Add a pre-commit hook or CI check (already in this repo via gitleaks) to catch future leaks.
 
 ---
 *Auto-generated by fix_pr_agent.py — human review required before merging.*"""
 
-    url = open_draft_pr(
-        owner, repo,
+    url = open_draft_pr(owner, repo,
         title=f"fix(security): secret leak in {entry} — rotate credentials",
-        body=pr_body,
-        head=branch,
-    )
+        body=pr_body, head=branch)
     print(f"  Opened draft PR: {url}")
     return url
 
-
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
 
 def main():
     if not GITHUB_TOKEN:
@@ -349,60 +277,44 @@ def main():
     owner = GITHUB_ORG  or "unknown"
     repo  = GITHUB_REPO or "unknown"
 
-    # Load OSV + Semgrep for true positives
-    # (We rely on context_triage_agent having written FIX_LIST.md,
-    #  but also load raw reports as the source of truth for structured data.)
     osv_data      = json.loads((REPORTS / "osv.json").read_text())      if (REPORTS / "osv.json").exists()      else None
     semgrep_data  = json.loads((REPORTS / "semgrep.json").read_text())  if (REPORTS / "semgrep.json").exists()  else None
     gitleaks_data = json.loads((REPORTS / "gitleaks.json").read_text()) if (REPORTS / "gitleaks.json").exists() else None
 
     findings = []
 
-    # OSV → dep fixes
     if osv_data:
         for res in osv_data.get("results", []):
             for p in res.get("packages", []):
                 pkg = p.get("package", {}).get("name", "unknown")
                 for v in p.get("vulnerabilities", []):
-                    findings.append({
-                        "type": "dep",
-                        "tool": "osv-scanner",
+                    findings.append({"type": "dep", "tool": "osv-scanner",
                         "title": f"Vulnerable dep: {pkg} ({v.get('id','OSV')})",
-                        "severity": "HIGH",
-                        "file": "dependency-manifest",
+                        "severity": "HIGH", "file": "dependency-manifest",
                         "location": "dependency-manifest",
-                        "recommendation": "Update to a patched version.",
-                    })
+                        "recommendation": "Update to a patched version."})
 
-    # Semgrep → SAST fixes
     if semgrep_data and "results" in semgrep_data:
         for r in semgrep_data["results"]:
             path = (r.get("path") or "").replace("\\", "/")
             if "node_modules/" in path:
                 continue
-            findings.append({
-                "type": "sast",
-                "tool": "semgrep",
+            findings.append({"type": "sast", "tool": "semgrep",
                 "title": f"{r.get('check_id','rule')}: {r.get('extra',{}).get('message','')[:100]}",
                 "severity": r.get("extra", {}).get("severity", "MEDIUM"),
                 "file": path,
                 "location": f"{path}:{r.get('start',{}).get('line','?')}",
                 "recommendation": "See Semgrep rule for fix guidance.",
-                "analysis": {},
-            })
+                "analysis": {}})
 
-    # Gitleaks → secret fixes
     if gitleaks_data and isinstance(gitleaks_data, list):
         for r in gitleaks_data:
-            findings.append({
-                "type": "secret",
-                "tool": "gitleaks",
+            findings.append({"type": "secret", "tool": "gitleaks",
                 "title": f"Secret: {r.get('Description','unknown')}",
                 "severity": "CRITICAL",
                 "file": r.get("File", "unknown"),
                 "location": f"{r.get('File','?')}:{r.get('StartLine','?')}",
-                "recommendation": "Rotate credentials immediately.",
-            })
+                "recommendation": "Rotate credentials immediately."})
 
     print(f"Total findings to fix: {len(findings)}")
     base_sha = get_default_sha(owner, repo)

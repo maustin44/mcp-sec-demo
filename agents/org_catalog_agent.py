@@ -49,7 +49,6 @@ def list_repos(org: str) -> list[dict]:
     repos = []
     page = 1
     while True:
-        # Try org endpoint first; fall back to user endpoint
         try:
             batch = gh_get(f"/orgs/{org}/repos?per_page=100&page={page}")
         except urllib.error.HTTPError:
@@ -68,7 +67,7 @@ def get_readme(owner: str, repo: str) -> str:
     try:
         data = gh_get(f"/repos/{owner}/{repo}/readme")
         raw = base64.b64decode(data["content"]).decode("utf-8", errors="replace")
-        return raw[:4000]  # trim so we don't blow context window
+        return raw[:4000]
     except Exception:
         return ""
 
@@ -86,7 +85,6 @@ def get_languages(owner: str, repo: str) -> str:
 def claude_summarise(repo_name: str, description: str, languages: str, readme: str) -> str:
     """Ask Claude for a one-paragraph plain-English summary of what this repo does."""
     if not ANTHROPIC_API_KEY:
-        # Graceful degradation — just use GitHub description
         return description or "(No description available — set ANTHROPIC_API_KEY for AI summaries.)"
 
     prompt = (
@@ -100,7 +98,7 @@ def claude_summarise(repo_name: str, description: str, languages: str, readme: s
     )
 
     body = json.dumps({
-        "model": "claude-sonnet-4-20250514",
+        "model": "claude-haiku-4-5-20251001",
         "max_tokens": 300,
         "messages": [{"role": "user", "content": prompt}],
     }).encode()
@@ -142,12 +140,11 @@ def main():
     ]
 
     for repo in repos:
-        name        = repo["name"]
-        full_name   = repo["full_name"]
-        description = repo.get("description") or ""
-        url         = repo["html_url"]
-        archived    = repo.get("archived", False)
-        pushed_at   = repo.get("pushed_at", "unknown")
+        name           = repo["name"]
+        description    = repo.get("description") or ""
+        url            = repo["html_url"]
+        archived       = repo.get("archived", False)
+        pushed_at      = repo.get("pushed_at", "unknown")
         default_branch = repo.get("default_branch", "main")
 
         print(f"  Processing {name}...", end=" ", flush=True)
