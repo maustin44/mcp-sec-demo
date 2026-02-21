@@ -1,79 +1,180 @@
-name: MCP Security Agent Demo
+name: MCP Security Agent
 
 on:
   workflow_dispatch:
+    inputs:
+      run_fix_prs:
+        description: 'Open fix PRs for confirmed findings?'
+        required: false
+        default: 'true'
   push:
     branches: [ "main" ]
+  schedule:
+    # Run every day at 02:00 UTC so new CVEs are caught quickly
+    - cron: '0 2 * * *'
 
 permissions:
   contents: write
   pull-requests: write
 
+env:
+  GITHUB_ORG:  ${{ github.repository_owner }}
+  GITHUB_REPO: ${{ github.event.repository.name }}
+
 jobs:
-  scan-and-pr:
+  # -----------------------------------------------------------------------
+  # Job 1: Org-wide repo catalog
+  # -----------------------------------------------------------------------
+  org-catalog:
+    name: Org Catalog
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Setup Node
-        uses: actions/setup-node@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install agent deps
+        run: pip install -r agents/requirements.txt
+
+      - name: Run Org Catalog Agent
+        env:
+          GITHUB_TOKEN:      ${{ secrets.GITHUB_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: python agents/org_catalog_agent.py
+
+      - name: Upload catalog artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: org-catalog
+          path: docs/ORG_CATALOG.md
+
+  # -----------------------------------------------------------------------
+  # Job 2: Security scanning + contextual triage
+  # -----------------------------------------------------------------------
+  scan-and-triage:
+    name: Scan & Contextual Triage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
         with:
           node-version: "20"
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22.x"
 
       - name: Install app deps
         working-directory: app
         run: npm install
-      - name: Setup Go (for gitleaks + osv-scanner)
-        uses: actions/setup-go@v5
-        with:
-          go-version: "1.22.x"
 
       - name: Install security tools
         run: |
-          python -m pip install --upgrade pip
           pip install semgrep
-
-          # Install gitleaks + osv-scanner via Go (stable)
           go install github.com/zricethezav/gitleaks/v8@latest
           go install github.com/google/osv-scanner/cmd/osv-scanner@latest
-
-          # Add Go bin to PATH for subsequent steps
           echo "$(go env GOPATH)/bin" >> $GITHUB_PATH
 
-      - name: Verify tool installs
-        run: |
-          semgrep --version
-          gitleaks version
-          osv-scanner --version
-
       - name: Install agent deps
-        run: |
-          pip install -r agents/requirements.txt
+        run: pip install -r agents/requirements.txt
 
-      - name: Run Catalog Agent
+      - name: Run Catalog Agent (single-repo)
         run: python agents/catalog_agent.py
 
-      - name: Run Tools Agent
+      - name: Run Tools Agent (scanners)
         run: python agents/run_tools_agent.py
 
-      - name: Run Triage Agent
-        run: python agents/triage_agent.py
+      - name: Run Context Triage Agent (AI false-positive filter)
+        env:
+          GITHUB_TOKEN:      ${{ secrets.GITHUB_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: python agents/context_triage_agent.py
 
-      - name: Create Draft PR with Results
+      - name: Upload scan reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: scan-reports
+          path: |
+            reports/
+            docs/FIX_LIST.md
+            docs/CATALOG.md
+
+  # -----------------------------------------------------------------------
+  # Job 3: Open fix PRs for confirmed findings
+  # -----------------------------------------------------------------------
+  fix-prs:
+    name: Open Fix PRs
+    runs-on: ubuntu-latest
+    needs: scan-and-triage
+    if: |
+      github.event_name != 'schedule' &&
+      (github.event.inputs.run_fix_prs == 'true' || github.event.inputs.run_fix_prs == '')
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Download scan reports
+        uses: actions/download-artifact@v4
+        with:
+          name: scan-reports
+
+      - name: Install agent deps
+        run: pip install -r agents/requirements.txt
+
+      - name: Run Fix PR Agent
+        env:
+          GITHUB_TOKEN:      ${{ secrets.GITHUB_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: python agents/fix_pr_agent.py
+
+  # -----------------------------------------------------------------------
+  # Job 4: Publish summary docs as draft PR
+  # -----------------------------------------------------------------------
+  publish-docs:
+    name: Publish Docs PR
+    runs-on: ubuntu-latest
+    needs: [org-catalog, scan-and-triage]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download org catalog
+        uses: actions/download-artifact@v4
+        with:
+          name: org-catalog
+          path: docs/
+
+      - name: Download scan reports
+        uses: actions/download-artifact@v4
+        with:
+          name: scan-reports
+
+      - name: Create Draft Docs PR
         uses: peter-evans/create-pull-request@v6
         with:
-          commit-message: "chore: update catalog and fix list"
-          title: "Security Catalog + Fix List Update"
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: "chore: update security catalog and fix list"
+          title: "[Security Agent] Catalog + Fix List Update"
           body: |
-            Automated update from security agents:
-            - docs/CATALOG.md
-            - docs/FIX_LIST.md
-            - reports/*.json
-          branch: "security/agent-update"
+            ## Automated Security Agent Run
+
+            | Artifact | File |
+            |---|---|
+            | Org Catalog | `docs/ORG_CATALOG.md` |
+            | Repo Catalog | `docs/CATALOG.md` |
+            | Filtered Fix List | `docs/FIX_LIST.md` |
+            | Raw Reports | `reports/` |
+
+            Fix PRs have been opened separately for each confirmed vulnerability.
+            This PR contains updated documentation only — safe to merge.
+          branch: security/agent-docs-update
           draft: true
