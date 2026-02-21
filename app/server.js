@@ -2,9 +2,9 @@ const express = require("express");
 const app = express();
 app.use(express.json());
 
-// overly permissive CORS (for testing)
+// Restrict CORS to specific trusted origin
 app.use((req, res, next) => {
-  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Origin", "https://yourdomain.com");
   next();
 });
 
@@ -12,18 +12,20 @@ app.get("/", (req, res) => {
   res.send("mcp-sec-demo running");
 });
 
-// "search" endpoint (common pattern that scanners may flag)
+// "search" endpoint
 app.get("/search", (req, res) => {
   const q = req.query.q || "";
-  // pretend search; in real life this might hit a DB
   res.json({ query: q, results: [] });
 });
 
-// intentionally unsafe endpoint for SAST to catch
+// Safe alternative to eval() - only allow basic math expressions
 app.post("/calc", (req, res) => {
   const expr = req.body?.expr || "1+1";
-  // DO NOT DO THIS IN REAL LIFE — intentionally unsafe for demo
-  const result = eval(expr);
+  // Safe: only allow numbers and basic math operators
+  if (!/^[\d\s+\-*/().]+$/.test(expr)) {
+    return res.status(400).json({ error: "Invalid expression. Only basic math allowed." });
+  }
+  const result = Function('"use strict"; return (' + expr + ')')();
   res.json({ expr, result });
 });
 
