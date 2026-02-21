@@ -1,17 +1,17 @@
 # Repository Catalog
 
-- Generated: 2026-02-21T04:45:20.426520Z
+- Generated: 2026-02-21T07:00:13.795342Z
 - Repo Root: `mcp-sec-demo`
 
 ## Languages (approx.)
-- Python: 2845 files
-- JSON: 13 files
-- Markdown: 12 files
-- JavaScript: 5 files
-- YAML: 5 files
+- JSON: 6 files
+- Python: 3 files
+- JavaScript: 2 files
+- Markdown: 2 files
+- YAML: 1 files
 
 ## Key Entry Points
-- `app\server.js`
+- `app/server.js`
 
 ## Important Directories
 - `app/`
