@@ -1,7 +1,7 @@
 """
 AI Security Triage Agent
 Reads Semgrep and OSV scan results, uses an LLM to triage findings,
-and opens GitHub PRs for confirmed vulnerabilities.
+opens GitHub PRs for confirmed vulnerabilities, and updates a Notion dashboard.
 
 Supports two LLM providers:
   - Ollama (default) — runs locally, free, private
@@ -13,6 +13,7 @@ import os
 import re
 import time
 import requests
+from datetime import datetime, timezone
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -69,12 +70,9 @@ HEADERS = {
 
 def get_default_branch_sha() -> str:
     """Auto-fetch the latest SHA from the default branch."""
-    # Get default branch name first
     repo_url = f"{GITHUB_API}/repos/{GITHUB_REPOSITORY}"
     repo_resp = requests.get(repo_url, headers=HEADERS)
     default_branch = repo_resp.json().get("default_branch", "main")
-
-    # Get its SHA
     branch_url = f"{GITHUB_API}/repos/{GITHUB_REPOSITORY}/branches/{default_branch}"
     branch_resp = requests.get(branch_url, headers=HEADERS)
     sha = branch_resp.json().get("commit", {}).get("sha", "")
@@ -82,14 +80,172 @@ def get_default_branch_sha() -> str:
     return sha
 
 
-# Set SHA automatically — no need to set it in .env
 GITHUB_SHA = os.environ.get("GITHUB_SHA") or get_default_branch_sha()
+
+
+# ── Notion config ───────────────────────────────────────────────────────────
+NOTION_TOKEN = os.environ.get("NOTION_TOKEN", "")
+NOTION_PAGE_ID = os.environ.get("NOTION_PAGE_ID", "")
+NOTION_API = "https://api.notion.com/v1"
+NOTION_HEADERS = {
+    "Authorization": f"Bearer {NOTION_TOKEN}",
+    "Content-Type": "application/json",
+    "Notion-Version": "2022-06-28",
+}
+NOTION_ENABLED = bool(NOTION_TOKEN and NOTION_PAGE_ID)
+
+
+def notion_find_or_create_database(parent_page_id: str, title: str) -> str | None:
+    """Find an existing database on the page or create a new one."""
+    # Search for existing database with this title
+    resp = requests.post(f"{NOTION_API}/search", headers=NOTION_HEADERS, json={
+        "query": title,
+        "filter": {"value": "database", "property": "object"},
+    })
+    if resp.status_code == 200:
+        for result in resp.json().get("results", []):
+            # Check if it belongs to our page
+            parent = result.get("parent", {})
+            if parent.get("page_id", "").replace("-", "") == parent_page_id.replace("-", ""):
+                print(f"  Found existing Notion database: {result['id']}")
+                return result["id"]
+
+    # Create a new database
+    resp = requests.post(f"{NOTION_API}/databases", headers=NOTION_HEADERS, json={
+        "parent": {"type": "page_id", "page_id": parent_page_id},
+        "title": [{"type": "text", "text": {"content": title}}],
+        "properties": {
+            "Finding": {"title": {}},
+            "Repo": {"rich_text": {}},
+            "File": {"rich_text": {}},
+            "Severity": {
+                "select": {
+                    "options": [
+                        {"name": "CRITICAL", "color": "red"},
+                        {"name": "ERROR", "color": "orange"},
+                        {"name": "WARNING", "color": "yellow"},
+                        {"name": "INFO", "color": "blue"},
+                        {"name": "UNKNOWN", "color": "gray"},
+                    ]
+                }
+            },
+            "Verdict": {
+                "select": {
+                    "options": [
+                        {"name": "REAL", "color": "red"},
+                        {"name": "FALSE_POSITIVE", "color": "green"},
+                    ]
+                }
+            },
+            "Confidence": {
+                "select": {
+                    "options": [
+                        {"name": "HIGH", "color": "red"},
+                        {"name": "MEDIUM", "color": "yellow"},
+                        {"name": "LOW", "color": "gray"},
+                    ]
+                }
+            },
+            "PR": {"url": {}},
+            "Scan Date": {"date": {}},
+            "Type": {
+                "select": {
+                    "options": [
+                        {"name": "SAST", "color": "purple"},
+                        {"name": "Dependency", "color": "blue"},
+                        {"name": "Secret", "color": "red"},
+                    ]
+                }
+            },
+        },
+    })
+
+    if resp.status_code in (200, 201):
+        db_id = resp.json()["id"]
+        print(f"  Created Notion database: {db_id}")
+        return db_id
+
+    print(f"  Failed to create Notion database: {resp.status_code} {resp.text}")
+    return None
+
+
+def notion_add_finding(database_id: str, finding_data: dict):
+    """Add a single finding row to the Notion database."""
+    scan_date = datetime.now(timezone.utc).isoformat()
+
+    properties = {
+        "Finding": {
+            "title": [{"text": {"content": finding_data.get("rule", "Unknown")[:100]}}]
+        },
+        "Repo": {
+            "rich_text": [{"text": {"content": GITHUB_REPOSITORY}}]
+        },
+        "File": {
+            "rich_text": [{"text": {"content": finding_data.get("file", "")[:200]}}]
+        },
+        "Severity": {
+            "select": {"name": finding_data.get("severity", "UNKNOWN")}
+        },
+        "Verdict": {
+            "select": {"name": finding_data.get("verdict", "REAL")}
+        },
+        "Confidence": {
+            "select": {"name": finding_data.get("confidence", "LOW")}
+        },
+        "Scan Date": {
+            "date": {"start": scan_date}
+        },
+        "Type": {
+            "select": {"name": finding_data.get("type", "SAST")}
+        },
+    }
+
+    pr_url = finding_data.get("pr_url")
+    if pr_url:
+        properties["PR"] = {"url": pr_url}
+
+    resp = requests.post(f"{NOTION_API}/pages", headers=NOTION_HEADERS, json={
+        "parent": {"database_id": database_id},
+        "properties": properties,
+    })
+
+    if resp.status_code not in (200, 201):
+        print(f"  Failed to add Notion row: {resp.status_code} {resp.text}")
+
+
+def notion_update_summary(page_id: str, summary: dict):
+    """Append a scan summary block to the top of the Notion page."""
+    scan_time = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    text = (
+        f"🔍 Last scan: {scan_time} | "
+        f"Repo: {GITHUB_REPOSITORY} | "
+        f"Findings: {summary['total']} | "
+        f"Real: {summary['real']} | "
+        f"False positives: {summary['fp']} | "
+        f"PRs opened: {summary['prs']}"
+    )
+
+    requests.patch(f"{NOTION_API}/pages/{page_id}", headers=NOTION_HEADERS, json={
+        "properties": {
+            "title": [{"text": {"content": "Security Dashboard"}}]
+        }
+    })
+
+    requests.patch(f"{NOTION_API}/blocks/{page_id}/children", headers=NOTION_HEADERS, json={
+        "children": [{
+            "object": "block",
+            "type": "callout",
+            "callout": {
+                "rich_text": [{"type": "text", "text": {"content": text}}],
+                "icon": {"emoji": "🛡️"},
+                "color": "blue_background",
+            }
+        }]
+    })
 
 
 # ── GitHub helpers ──────────────────────────────────────────────────────────
 def get_file_contents(path: str) -> str:
-    """Fetch a file's contents from GitHub."""
-    # Normalize Windows-style paths
     path = path.replace("\\", "/")
     url = f"{GITHUB_API}/repos/{GITHUB_REPOSITORY}/contents/{path}"
     resp = requests.get(url, headers=HEADERS, params={"ref": GITHUB_SHA})
@@ -101,7 +257,6 @@ def get_file_contents(path: str) -> str:
 
 
 def get_file_sha(path: str, branch: str) -> str | None:
-    """Get the SHA of an existing file on a branch."""
     path = path.replace("\\", "/")
     url = f"{GITHUB_API}/repos/{GITHUB_REPOSITORY}/contents/{path}"
     resp = requests.get(url, headers=HEADERS, params={"ref": branch})
@@ -111,7 +266,6 @@ def get_file_sha(path: str, branch: str) -> str | None:
 
 
 def create_branch(branch_name: str, base_sha: str) -> bool:
-    """Create a new branch from a given SHA."""
     url = f"{GITHUB_API}/repos/{GITHUB_REPOSITORY}/git/refs"
     resp = requests.post(url, headers=HEADERS, json={
         "ref": f"refs/heads/{branch_name}",
@@ -121,7 +275,6 @@ def create_branch(branch_name: str, base_sha: str) -> bool:
 
 
 def push_file(path: str, content: str, message: str, branch: str) -> bool:
-    """Create or update a file on a branch."""
     import base64
     path = path.replace("\\", "/")
     url = f"{GITHUB_API}/repos/{GITHUB_REPOSITORY}/contents/{path}"
@@ -138,7 +291,6 @@ def push_file(path: str, content: str, message: str, branch: str) -> bool:
 
 
 def open_pull_request(title: str, body: str, head: str, base: str = "main") -> str | None:
-    """Open a PR and return its URL."""
     url = f"{GITHUB_API}/repos/{GITHUB_REPOSITORY}/pulls"
     resp = requests.post(url, headers=HEADERS, json={
         "title": title,
@@ -188,7 +340,6 @@ def load_osv_findings() -> list[dict]:
 
 # ── Triage functions ────────────────────────────────────────────────────────
 def parse_llm_json(raw: str) -> dict:
-    """Strip markdown fences and parse JSON from LLM response."""
     raw = re.sub(r"^```json\s*", "", raw)
     raw = re.sub(r"^```\s*", "", raw)
     raw = re.sub(r"\s*```$", "", raw)
@@ -199,7 +350,6 @@ def parse_llm_json(raw: str) -> dict:
 
 
 def triage_semgrep_finding(finding: dict) -> dict:
-    """Ask LLM whether a Semgrep finding is real or a false positive."""
     file_path = finding.get("path", "")
     line = finding.get("start", {}).get("line", 0)
     rule = finding.get("check_id", "")
@@ -248,7 +398,6 @@ You MUST respond with ONLY a JSON object, no other text before or after:
         raw = ask_llm(prompt)
         try:
             result = parse_llm_json(raw)
-            # Validate required fields
             if "verdict" in result and "confidence" in result:
                 break
         except (json.JSONDecodeError, AttributeError):
@@ -271,7 +420,6 @@ You MUST respond with ONLY a JSON object, no other text before or after:
 
 
 def triage_osv_finding(finding: dict) -> dict:
-    """Ask LLM to summarise an OSV dependency vulnerability."""
     prompt = f"""You are a security engineer reviewing a dependency vulnerability.
 
 Package: {finding['package']} version {finding['version']}
@@ -302,15 +450,14 @@ Respond with ONLY a JSON object, no other text:
 
 
 # ── PR creation ─────────────────────────────────────────────────────────────
-def create_fix_pr(triage_result: dict, branch_name: str):
-    """Push the fix to a new branch and open a PR."""
+def create_fix_pr(triage_result: dict, branch_name: str) -> str | None:
     finding = triage_result["finding"]
     file_path = triage_result["file_path"]
     fix_code = triage_result.get("fix")
 
     if not fix_code:
         print(f"  No fix code provided for {file_path}, skipping PR.")
-        return
+        return None
 
     create_branch(branch_name, GITHUB_SHA)
 
@@ -370,6 +517,8 @@ This PR was opened automatically by the AI Security Agent.
     else:
         print(f"  ❌ Failed to open PR for {file_path}")
 
+    return pr_url
+
 
 # ── Main ────────────────────────────────────────────────────────────────────
 def main():
@@ -380,17 +529,29 @@ def main():
         print(f"(model: {OLLAMA_MODEL} @ {OLLAMA_URL})")
     else:
         print("(Anthropic API)")
+    if NOTION_ENABLED:
+        print("Notion: ✅ enabled")
+    else:
+        print("Notion: ⚠️  disabled (set NOTION_TOKEN and NOTION_PAGE_ID to enable)")
     print("=" * 60)
+
+    # Set up Notion database if enabled
+    notion_db_id = None
+    if NOTION_ENABLED:
+        print("\n📓 Setting up Notion database...")
+        notion_db_id = notion_find_or_create_database(NOTION_PAGE_ID, "Security Findings")
 
     semgrep_findings = load_semgrep_findings()
     print(f"\n📋 Semgrep findings: {len(semgrep_findings)}")
 
     real_count = 0
     fp_count = 0
+    pr_count = 0
 
     for i, finding in enumerate(semgrep_findings):
         file_path = finding.get("path", "unknown")
         rule = finding.get("check_id", "unknown")
+        severity = finding.get("extra", {}).get("severity", "UNKNOWN")
         print(f"\n[{i+1}/{len(semgrep_findings)}] Triaging: {rule} in {file_path}")
 
         result = triage_semgrep_finding(finding)
@@ -401,6 +562,7 @@ def main():
         print(f"  Verdict:    {verdict} ({confidence} confidence)")
         print(f"  Reason:     {explanation}")
 
+        pr_url = None
         if verdict == "FALSE_POSITIVE":
             fp_count += 1
             print("  → Skipping (false positive)")
@@ -408,7 +570,21 @@ def main():
             real_count += 1
             branch_name = f"fix/sast-{rule.split('.')[-1]}-{int(time.time())}"
             print(f"  → Creating PR on branch: {branch_name}")
-            create_fix_pr(result, branch_name)
+            pr_url = create_fix_pr(result, branch_name)
+            if pr_url:
+                pr_count += 1
+
+        # Log to Notion
+        if NOTION_ENABLED and notion_db_id:
+            notion_add_finding(notion_db_id, {
+                "rule": rule,
+                "file": file_path,
+                "severity": severity,
+                "verdict": verdict,
+                "confidence": confidence,
+                "pr_url": pr_url,
+                "type": "SAST",
+            })
 
     osv_findings = load_osv_findings()
     print(f"\n📦 OSV dependency findings: {len(osv_findings)}")
@@ -416,11 +592,34 @@ def main():
     for i, finding in enumerate(osv_findings):
         pkg = finding.get("package", "unknown")
         vuln_id = finding.get("id", "unknown")
+        severity = finding.get("severity", "UNKNOWN")
         print(f"\n[{i+1}/{len(osv_findings)}] Triaging: {vuln_id} in {pkg}")
 
         result = triage_osv_finding(finding)
         print(f"  Verdict:  {result.get('verdict')} ({result.get('confidence')} confidence)")
         print(f"  Action:   {result.get('fix_description', '')}")
+
+        if NOTION_ENABLED and notion_db_id:
+            notion_add_finding(notion_db_id, {
+                "rule": vuln_id,
+                "file": f"{pkg}@{finding.get('version', '?')}",
+                "severity": severity,
+                "verdict": result.get("verdict", "REAL"),
+                "confidence": result.get("confidence", "LOW"),
+                "pr_url": None,
+                "type": "Dependency",
+            })
+
+    # Update Notion summary
+    if NOTION_ENABLED:
+        print("\n📓 Updating Notion dashboard summary...")
+        notion_update_summary(NOTION_PAGE_ID, {
+            "total": len(semgrep_findings) + len(osv_findings),
+            "real": real_count,
+            "fp": fp_count,
+            "prs": pr_count,
+        })
+        print(f"  ✅ Notion updated: https://notion.so/{NOTION_PAGE_ID.replace('-', '')}")
 
     print("\n" + "=" * 60)
     print("Summary")
@@ -429,6 +628,9 @@ def main():
     print(f"  Real vulnerabilities:  {real_count}")
     print(f"  False positives:       {fp_count}")
     print(f"  OSV findings:          {len(osv_findings)}")
+    print(f"  PRs opened:            {pr_count}")
+    if NOTION_ENABLED:
+        print(f"  Notion dashboard:      https://notion.so/{NOTION_PAGE_ID.replace('-', '')}")
     print("=" * 60)
 
 
