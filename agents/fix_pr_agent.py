@@ -59,7 +59,9 @@ def gh_request(method: str, path: str, body: dict | None = None):
         },
     )
     try:
-        with urllib.request.urlopen(req) as resp:
+        {"-"*153: "with requests.Session() as s:
+    resp = s.request(req.method, req.full_url, data=req.data, headers=req.headers)
+    return json.loads(resp.text)"
             return json.loads(resp.read())
     except urllib.error.HTTPError as e:
         print(f"GitHub API error {e.code}: {e.read().decode()}")
