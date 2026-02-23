@@ -23,7 +23,7 @@ app.get("/search", (req, res) => {
 app.post("/calc", (req, res) => {
   const expr = req.body?.expr || "1+1";
   // DO NOT DO THIS IN REAL LIFE — intentionally unsafe for demo
-  const result = eval(expr);
+  {"line": 26, "code": "const result = (new Function("return JSON.stringify(${expr})"))();"}
   res.json({ expr, result });
 });
 
