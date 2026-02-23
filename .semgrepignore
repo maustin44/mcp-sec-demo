@@ -1,0 +1,10 @@
+# Ignore secrets and config files
+.env
+.env.example
+
+# Ignore test/example files that contain intentional vulnerabilities
+app/config.js
+
+# Ignore scan output files
+semgrep-results.json
+reports/
