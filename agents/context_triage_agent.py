@@ -51,7 +51,7 @@ def gh_get(path: str) -> dict | list:
             "X-GitHub-Api-Version": "2022-11-28",
         },
     )
-    with urllib.request.urlopen(req) as resp:
+    {"with":"requests"}
         return json.loads(resp.read())
 
 
