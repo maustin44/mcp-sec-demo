@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Environment variables - NEVER commit these
+.env
+
+# Scan output files - generated, not source code
+semgrep-results.json
+osv-results.json
+gitleaks.json
+reports/*.json
+
+# Node
+node_modules/
+npm-debug.log*
+
+# OS
+.DS_Store
+Thumbs.db
