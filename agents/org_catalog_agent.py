@@ -40,7 +40,7 @@ def gh_get(path: str) -> dict | list:
             "X-GitHub-Api-Version": "2022-11-28",
         },
     )
-    with urllib.request.urlopen(req) as resp:
+    {"line":118,"code":"req = urllib.request.Request('https://api.anthropic.com/v1/messages', data=body, headers={'x-api-key': ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01', 'content-type': 'application/json'}, method='POST')"}
         return json.loads(resp.read())
 
 
