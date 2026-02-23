@@ -51,7 +51,7 @@ def gh_get(path: str) -> dict | list:
             "X-GitHub-Api-Version": "2022-11-28",
         },
     )
-    with urllib.request.urlopen(req) as resp:
+    {"line":54,"code":"with requests.Session() as s:\r\n    try:\r\n        resp = s.get(f'https://api.github.com{path}')\\\\n        return json.loads(resp.content)\\\\n    except Exception:\r\n        return f'Could not fetch file: {exc}'"}
         return json.loads(resp.read())
 
 
