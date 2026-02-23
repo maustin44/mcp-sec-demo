@@ -55,6 +55,18 @@ def ask_llm(prompt: str, retries: int = 3) -> str:
     return ""
 
 
+def coerce_str(value) -> str:
+    """Safely convert any LLM output value to a plain string."""
+    if value is None:
+        return ""
+    if isinstance(value, dict):
+        # LLM sometimes wraps code in {"code": "..."} or {"fix": "..."}
+        return value.get("code") or value.get("fix") or json.dumps(value)
+    if isinstance(value, list):
+        return "\n".join(str(v) for v in value)
+    return str(value)
+
+
 # ── GitHub config ───────────────────────────────────────────────────────────
 GITHUB_TOKEN = os.environ["GITHUB_TOKEN"]
 GITHUB_REPOSITORY = os.environ["GITHUB_REPOSITORY"]
@@ -97,20 +109,17 @@ NOTION_ENABLED = bool(NOTION_TOKEN and NOTION_PAGE_ID)
 
 def notion_find_or_create_database(parent_page_id: str, title: str) -> str | None:
     """Find an existing database on the page or create a new one."""
-    # Search for existing database with this title
     resp = requests.post(f"{NOTION_API}/search", headers=NOTION_HEADERS, json={
         "query": title,
         "filter": {"value": "database", "property": "object"},
     })
     if resp.status_code == 200:
         for result in resp.json().get("results", []):
-            # Check if it belongs to our page
             parent = result.get("parent", {})
             if parent.get("page_id", "").replace("-", "") == parent_page_id.replace("-", ""):
                 print(f"  Found existing Notion database: {result['id']}")
                 return result["id"]
 
-    # Create a new database
     resp = requests.post(f"{NOTION_API}/databases", headers=NOTION_HEADERS, json={
         "parent": {"type": "page_id", "page_id": parent_page_id},
         "title": [{"type": "text", "text": {"content": title}}],
@@ -214,7 +223,7 @@ def notion_add_finding(database_id: str, finding_data: dict):
 
 
 def notion_update_summary(page_id: str, summary: dict):
-    """Append a scan summary block to the top of the Notion page."""
+    """Append a scan summary callout to the Notion page."""
     scan_time = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     text = (
         f"🔍 Last scan: {scan_time} | "
@@ -224,12 +233,6 @@ def notion_update_summary(page_id: str, summary: dict):
         f"False positives: {summary['fp']} | "
         f"PRs opened: {summary['prs']}"
     )
-
-    requests.patch(f"{NOTION_API}/pages/{page_id}", headers=NOTION_HEADERS, json={
-        "properties": {
-            "title": [{"text": {"content": "Security Dashboard"}}]
-        }
-    })
 
     requests.patch(f"{NOTION_API}/blocks/{page_id}/children", headers=NOTION_HEADERS, json={
         "children": [{
@@ -381,16 +384,17 @@ Surrounding code context (lines {start+1}-{end}):
 
 Your job:
 1. Determine if this is a REAL vulnerability or a FALSE POSITIVE
-2. If REAL: provide a specific code fix
+2. If REAL: provide a specific code fix as a plain string
 3. If FALSE POSITIVE: explain exactly why
 
-You MUST respond with ONLY a JSON object, no other text before or after:
+You MUST respond with ONLY a JSON object, no other text before or after.
+The "fix" field MUST be a plain string (not an object), or null:
 {{
   "verdict": "REAL",
   "confidence": "HIGH",
   "explanation": "brief explanation",
-  "fix": "the fixed code snippet or null",
-  "fix_description": "what was changed and why or null"
+  "fix": "the fixed code as a plain string, or null",
+  "fix_description": "what was changed and why, or null"
 }}"""
 
     result = None
@@ -453,7 +457,7 @@ Respond with ONLY a JSON object, no other text:
 def create_fix_pr(triage_result: dict, branch_name: str) -> str | None:
     finding = triage_result["finding"]
     file_path = triage_result["file_path"]
-    fix_code = triage_result.get("fix")
+    fix_code = coerce_str(triage_result.get("fix")).strip()
 
     if not fix_code:
         print(f"  No fix code provided for {file_path}, skipping PR.")
@@ -465,7 +469,7 @@ def create_fix_pr(triage_result: dict, branch_name: str) -> str | None:
     flagged_line = finding.get("extra", {}).get("lines", "").strip()
 
     if flagged_line and flagged_line in original:
-        fixed_contents = original.replace(flagged_line, fix_code.strip(), 1)
+        fixed_contents = original.replace(flagged_line, fix_code, 1)
     else:
         fixed_contents = original + f"\n// TODO: Apply this fix manually:\n// {fix_code}\n"
 
@@ -497,10 +501,10 @@ This PR was opened automatically by the AI Security Agent.
 | Confidence | {triage_result.get('confidence', '?')} |
 
 ### Analysis
-{triage_result.get('explanation', '')}
+{coerce_str(triage_result.get('explanation'))}
 
 ### What Changed
-{triage_result.get('fix_description', '')}
+{coerce_str(triage_result.get('fix_description'))}
 
 ---
 ⚠️ **Human review required before merging.** Do not auto-merge.
@@ -535,7 +539,6 @@ def main():
         print("Notion: ⚠️  disabled (set NOTION_TOKEN and NOTION_PAGE_ID to enable)")
     print("=" * 60)
 
-    # Set up Notion database if enabled
     notion_db_id = None
     if NOTION_ENABLED:
         print("\n📓 Setting up Notion database...")
@@ -557,7 +560,7 @@ def main():
         result = triage_semgrep_finding(finding)
         verdict = result.get("verdict", "REAL")
         confidence = result.get("confidence", "LOW")
-        explanation = result.get("explanation", "")
+        explanation = coerce_str(result.get("explanation"))
 
         print(f"  Verdict:    {verdict} ({confidence} confidence)")
         print(f"  Reason:     {explanation}")
@@ -574,7 +577,6 @@ def main():
             if pr_url:
                 pr_count += 1
 
-        # Log to Notion
         if NOTION_ENABLED and notion_db_id:
             notion_add_finding(notion_db_id, {
                 "rule": rule,
@@ -597,7 +599,7 @@ def main():
 
         result = triage_osv_finding(finding)
         print(f"  Verdict:  {result.get('verdict')} ({result.get('confidence')} confidence)")
-        print(f"  Action:   {result.get('fix_description', '')}")
+        print(f"  Action:   {coerce_str(result.get('fix_description'))}")
 
         if NOTION_ENABLED and notion_db_id:
             notion_add_finding(notion_db_id, {
@@ -610,7 +612,6 @@ def main():
                 "type": "Dependency",
             })
 
-    # Update Notion summary
     if NOTION_ENABLED:
         print("\n📓 Updating Notion dashboard summary...")
         notion_update_summary(NOTION_PAGE_ID, {
