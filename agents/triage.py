@@ -1,23 +1,62 @@
 """
 AI Security Triage Agent
-Reads Semgrep and OSV scan results, uses Claude to triage findings,
+Reads Semgrep and OSV scan results, uses an LLM to triage findings,
 and opens GitHub PRs for confirmed vulnerabilities.
+
+Supports two LLM providers:
+  - Ollama (default) — runs locally, free, private
+  - Anthropic API    — set LLM_PROVIDER=anthropic in .env
 """
 
 import json
 import os
 import re
-import sys
+import time
 import requests
-import anthropic
 from pathlib import Path
+from dotenv import load_dotenv
+
+load_dotenv(dotenv_path=Path(__file__).parent.parent / ".env")
 
 
-# ── Config from environment ────────────────────────────────────────────────
-ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
+# ── LLM config ─────────────────────────────────────────────────────────────
+LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "ollama").lower()
+OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
+OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "mistral")
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+
+
+def ask_llm(prompt: str, retries: int = 3) -> str:
+    """Send a prompt to either Ollama or Anthropic with retry logic."""
+    for attempt in range(retries):
+        try:
+            if LLM_PROVIDER == "anthropic":
+                import anthropic as anthropic_sdk
+                client = anthropic_sdk.Anthropic(api_key=ANTHROPIC_API_KEY)
+                response = client.messages.create(
+                    model="claude-opus-4-6",
+                    max_tokens=1000,
+                    messages=[{"role": "user", "content": prompt}]
+                )
+                return response.content[0].text.strip()
+            else:
+                resp = requests.post(f"{OLLAMA_URL}/api/generate", json={
+                    "model": OLLAMA_MODEL,
+                    "prompt": prompt,
+                    "stream": False,
+                }, timeout=120)
+                resp.raise_for_status()
+                return resp.json()["response"].strip()
+        except Exception as e:
+            print(f"  LLM attempt {attempt + 1}/{retries} failed: {e}")
+            if attempt < retries - 1:
+                time.sleep(2)
+    return ""
+
+
+# ── GitHub config ───────────────────────────────────────────────────────────
 GITHUB_TOKEN = os.environ["GITHUB_TOKEN"]
-GITHUB_REPOSITORY = os.environ["GITHUB_REPOSITORY"]  # e.g. "maustin44/mcp-sec-demo"
-GITHUB_SHA = os.environ.get("GITHUB_SHA", "main")
+GITHUB_REPOSITORY = os.environ["GITHUB_REPOSITORY"]
 GITHUB_REF = os.environ.get("GITHUB_REF", "refs/heads/main")
 
 GITHUB_API = "https://api.github.com"
@@ -27,12 +66,31 @@ HEADERS = {
     "X-GitHub-Api-Version": "2022-11-28",
 }
 
-client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+
+def get_default_branch_sha() -> str:
+    """Auto-fetch the latest SHA from the default branch."""
+    # Get default branch name first
+    repo_url = f"{GITHUB_API}/repos/{GITHUB_REPOSITORY}"
+    repo_resp = requests.get(repo_url, headers=HEADERS)
+    default_branch = repo_resp.json().get("default_branch", "main")
+
+    # Get its SHA
+    branch_url = f"{GITHUB_API}/repos/{GITHUB_REPOSITORY}/branches/{default_branch}"
+    branch_resp = requests.get(branch_url, headers=HEADERS)
+    sha = branch_resp.json().get("commit", {}).get("sha", "")
+    print(f"  Auto-fetched SHA for '{default_branch}': {sha[:7]}...")
+    return sha
 
 
-# ── GitHub helpers ─────────────────────────────────────────────────────────
+# Set SHA automatically — no need to set it in .env
+GITHUB_SHA = os.environ.get("GITHUB_SHA") or get_default_branch_sha()
+
+
+# ── GitHub helpers ──────────────────────────────────────────────────────────
 def get_file_contents(path: str) -> str:
     """Fetch a file's contents from GitHub."""
+    # Normalize Windows-style paths
+    path = path.replace("\\", "/")
     url = f"{GITHUB_API}/repos/{GITHUB_REPOSITORY}/contents/{path}"
     resp = requests.get(url, headers=HEADERS, params={"ref": GITHUB_SHA})
     if resp.status_code != 200:
@@ -43,7 +101,8 @@ def get_file_contents(path: str) -> str:
 
 
 def get_file_sha(path: str, branch: str) -> str | None:
-    """Get the SHA of an existing file on a branch (needed for updates)."""
+    """Get the SHA of an existing file on a branch."""
+    path = path.replace("\\", "/")
     url = f"{GITHUB_API}/repos/{GITHUB_REPOSITORY}/contents/{path}"
     resp = requests.get(url, headers=HEADERS, params={"ref": branch})
     if resp.status_code == 200:
@@ -58,12 +117,13 @@ def create_branch(branch_name: str, base_sha: str) -> bool:
         "ref": f"refs/heads/{branch_name}",
         "sha": base_sha,
     })
-    return resp.status_code in (200, 201, 422)  # 422 = branch already exists
+    return resp.status_code in (200, 201, 422)
 
 
-def push_file(path: str, content: str, message: str, branch: str):
+def push_file(path: str, content: str, message: str, branch: str) -> bool:
     """Create or update a file on a branch."""
     import base64
+    path = path.replace("\\", "/")
     url = f"{GITHUB_API}/repos/{GITHUB_REPOSITORY}/contents/{path}"
     body = {
         "message": message,
@@ -92,13 +152,7 @@ def open_pull_request(title: str, body: str, head: str, base: str = "main") -> s
     return None
 
 
-def post_issue_comment(issue_number: int, comment: str):
-    """Post a comment on a PR or issue."""
-    url = f"{GITHUB_API}/repos/{GITHUB_REPOSITORY}/issues/{issue_number}/comments"
-    requests.post(url, headers=HEADERS, json={"body": comment})
-
-
-# ── Load scan results ──────────────────────────────────────────────────────
+# ── Load scan results ───────────────────────────────────────────────────────
 def load_semgrep_findings() -> list[dict]:
     path = Path("semgrep-results.json")
     if not path.exists():
@@ -132,9 +186,20 @@ def load_osv_findings() -> list[dict]:
         return []
 
 
-# ── Claude triage ──────────────────────────────────────────────────────────
+# ── Triage functions ────────────────────────────────────────────────────────
+def parse_llm_json(raw: str) -> dict:
+    """Strip markdown fences and parse JSON from LLM response."""
+    raw = re.sub(r"^```json\s*", "", raw)
+    raw = re.sub(r"^```\s*", "", raw)
+    raw = re.sub(r"\s*```$", "", raw)
+    match = re.search(r"\{.*\}", raw, re.DOTALL)
+    if match:
+        raw = match.group(0)
+    return json.loads(raw)
+
+
 def triage_semgrep_finding(finding: dict) -> dict:
-    """Ask Claude whether a Semgrep finding is real or a false positive."""
+    """Ask LLM whether a Semgrep finding is real or a false positive."""
     file_path = finding.get("path", "")
     line = finding.get("start", {}).get("line", 0)
     rule = finding.get("check_id", "")
@@ -142,10 +207,7 @@ def triage_semgrep_finding(finding: dict) -> dict:
     flagged_line = finding.get("extra", {}).get("lines", "")
     severity = finding.get("extra", {}).get("severity", "")
 
-    # Fetch full file for context
     file_contents = get_file_contents(file_path)
-    
-    # Limit context to avoid huge prompts — send 50 lines around the finding
     lines = file_contents.splitlines()
     start = max(0, line - 25)
     end = min(len(lines), line + 25)
@@ -172,37 +234,36 @@ Your job:
 2. If REAL: provide a specific code fix
 3. If FALSE POSITIVE: explain exactly why
 
-Respond in this exact JSON format:
+You MUST respond with ONLY a JSON object, no other text before or after:
 {{
-  "verdict": "REAL" or "FALSE_POSITIVE",
-  "confidence": "HIGH", "MEDIUM", or "LOW",
+  "verdict": "REAL",
+  "confidence": "HIGH",
   "explanation": "brief explanation",
-  "fix": "the fixed code snippet (only if REAL, otherwise null)",
-  "fix_description": "what was changed and why (only if REAL, otherwise null)"
+  "fix": "the fixed code snippet or null",
+  "fix_description": "what was changed and why or null"
 }}"""
 
-    response = client.messages.create(
-        model="claude-opus-4-6",
-        max_tokens=1000,
-        messages=[{"role": "user", "content": prompt}]
-    )
-    
-    raw = response.content[0].text.strip()
-    # Strip markdown code fences if present
-    raw = re.sub(r"^```json\s*", "", raw)
-    raw = re.sub(r"\s*```$", "", raw)
-    
-    try:
-        result = json.loads(raw)
-    except json.JSONDecodeError:
+    result = None
+    for attempt in range(3):
+        raw = ask_llm(prompt)
+        try:
+            result = parse_llm_json(raw)
+            # Validate required fields
+            if "verdict" in result and "confidence" in result:
+                break
+        except (json.JSONDecodeError, AttributeError):
+            print(f"  JSON parse attempt {attempt + 1}/3 failed, retrying...")
+            time.sleep(1)
+
+    if not result:
         result = {
             "verdict": "REAL",
             "confidence": "LOW",
-            "explanation": "Could not parse Claude response, flagging for manual review.",
+            "explanation": "Could not parse LLM response — flagging for manual review.",
             "fix": None,
             "fix_description": None,
         }
-    
+
     result["finding"] = finding
     result["file_path"] = file_path
     result["full_file_contents"] = file_contents
@@ -210,7 +271,7 @@ Respond in this exact JSON format:
 
 
 def triage_osv_finding(finding: dict) -> dict:
-    """Ask Claude to summarise an OSV dependency vulnerability."""
+    """Ask LLM to summarise an OSV dependency vulnerability."""
     prompt = f"""You are a security engineer reviewing a dependency vulnerability.
 
 Package: {finding['package']} version {finding['version']}
@@ -218,7 +279,7 @@ CVE/ID: {finding['id']}
 Severity: {finding['severity']}
 Summary: {finding['summary']}
 
-Is this worth fixing immediately? Respond in JSON:
+Respond with ONLY a JSON object, no other text:
 {{
   "verdict": "REAL",
   "confidence": "HIGH",
@@ -226,29 +287,21 @@ Is this worth fixing immediately? Respond in JSON:
   "fix_description": "recommended action e.g. upgrade to version X.Y.Z"
 }}"""
 
-    response = client.messages.create(
-        model="claude-opus-4-6",
-        max_tokens=500,
-        messages=[{"role": "user", "content": prompt}]
-    )
-    raw = response.content[0].text.strip()
-    raw = re.sub(r"^```json\s*", "", raw)
-    raw = re.sub(r"\s*```$", "", raw)
-
+    raw = ask_llm(prompt)
     try:
-        result = json.loads(raw)
-    except json.JSONDecodeError:
+        result = parse_llm_json(raw)
+    except (json.JSONDecodeError, AttributeError):
         result = {
             "verdict": "REAL",
             "confidence": "LOW",
-            "explanation": "Could not parse Claude response.",
+            "explanation": "Could not parse LLM response.",
             "fix_description": "Review manually.",
         }
     result["finding"] = finding
     return result
 
 
-# ── PR creation ────────────────────────────────────────────────────────────
+# ── PR creation ─────────────────────────────────────────────────────────────
 def create_fix_pr(triage_result: dict, branch_name: str):
     """Push the fix to a new branch and open a PR."""
     finding = triage_result["finding"]
@@ -259,18 +312,14 @@ def create_fix_pr(triage_result: dict, branch_name: str):
         print(f"  No fix code provided for {file_path}, skipping PR.")
         return
 
-    # Create branch
     create_branch(branch_name, GITHUB_SHA)
 
-    # Push fixed file
     original = triage_result.get("full_file_contents", "")
     flagged_line = finding.get("extra", {}).get("lines", "").strip()
-    
-    # Simple replacement — swap the flagged line with the fix
+
     if flagged_line and flagged_line in original:
         fixed_contents = original.replace(flagged_line, fix_code.strip(), 1)
     else:
-        # Fallback: append fix as a comment if we can't locate the exact line
         fixed_contents = original + f"\n// TODO: Apply this fix manually:\n// {fix_code}\n"
 
     push_file(
@@ -280,14 +329,15 @@ def create_fix_pr(triage_result: dict, branch_name: str):
         branch=branch_name,
     )
 
-    # Build PR body
     rule = finding.get("check_id", "unknown")
     line = finding.get("start", {}).get("line", "?")
     severity = finding.get("extra", {}).get("severity", "UNKNOWN")
 
     pr_body = f"""## 🔐 Automated Security Fix
 
-This PR was opened automatically by the AI Security Agent after a Semgrep scan.
+This PR was opened automatically by the AI Security Agent.
+
+**LLM Provider:** {LLM_PROVIDER.upper()}
 
 ### Finding
 
@@ -321,13 +371,17 @@ This PR was opened automatically by the AI Security Agent after a Semgrep scan.
         print(f"  ❌ Failed to open PR for {file_path}")
 
 
-# ── Main ───────────────────────────────────────────────────────────────────
+# ── Main ────────────────────────────────────────────────────────────────────
 def main():
     print("=" * 60)
     print("AI Security Triage Agent")
+    print(f"LLM Provider: {LLM_PROVIDER.upper()} ", end="")
+    if LLM_PROVIDER == "ollama":
+        print(f"(model: {OLLAMA_MODEL} @ {OLLAMA_URL})")
+    else:
+        print("(Anthropic API)")
     print("=" * 60)
 
-    # --- Semgrep ---
     semgrep_findings = load_semgrep_findings()
     print(f"\n📋 Semgrep findings: {len(semgrep_findings)}")
 
@@ -344,21 +398,18 @@ def main():
         confidence = result.get("confidence", "LOW")
         explanation = result.get("explanation", "")
 
-        print(f"  Verdict: {verdict} ({confidence} confidence)")
-        print(f"  Reason:  {explanation}")
+        print(f"  Verdict:    {verdict} ({confidence} confidence)")
+        print(f"  Reason:     {explanation}")
 
         if verdict == "FALSE_POSITIVE":
             fp_count += 1
             print("  → Skipping (false positive)")
         else:
             real_count += 1
-            import time
-            timestamp = int(time.time())
-            branch_name = f"fix/sast-{rule.split('.')[-1]}-{timestamp}"
+            branch_name = f"fix/sast-{rule.split('.')[-1]}-{int(time.time())}"
             print(f"  → Creating PR on branch: {branch_name}")
             create_fix_pr(result, branch_name)
 
-    # --- OSV ---
     osv_findings = load_osv_findings()
     print(f"\n📦 OSV dependency findings: {len(osv_findings)}")
 
@@ -368,18 +419,16 @@ def main():
         print(f"\n[{i+1}/{len(osv_findings)}] Triaging: {vuln_id} in {pkg}")
 
         result = triage_osv_finding(finding)
-        print(f"  Verdict: {result.get('verdict')} ({result.get('confidence')} confidence)")
-        print(f"  Action:  {result.get('fix_description', '')}")
-        # OSV findings don't auto-fix code — they're reported for manual action
+        print(f"  Verdict:  {result.get('verdict')} ({result.get('confidence')} confidence)")
+        print(f"  Action:   {result.get('fix_description', '')}")
 
-    # --- Summary ---
     print("\n" + "=" * 60)
     print("Summary")
     print("=" * 60)
-    print(f"  Semgrep findings:   {len(semgrep_findings)}")
-    print(f"  Real vulnerabilities: {real_count}")
-    print(f"  False positives:    {fp_count}")
-    print(f"  OSV findings:       {len(osv_findings)}")
+    print(f"  Semgrep findings:      {len(semgrep_findings)}")
+    print(f"  Real vulnerabilities:  {real_count}")
+    print(f"  False positives:       {fp_count}")
+    print(f"  OSV findings:          {len(osv_findings)}")
     print("=" * 60)
 
 
