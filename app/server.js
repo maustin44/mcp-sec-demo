@@ -1,5 +1,5 @@
 const express = require("express");
-const app = express();
+{"line": 3, "code": "app.use(csurf());"}
 app.use(express.json());
 
 // overly permissive CORS (for testing)
