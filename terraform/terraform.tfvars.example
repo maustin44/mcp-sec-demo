@@ -1,0 +1,8 @@
+# Copy this to terraform.tfvars and fill in values
+# NEVER commit terraform.tfvars to git
+
+aws_region    = "us-east-1"
+project       = "mcp-sec-demo"
+environment   = "dev"
+db_password   = "change-me-strong-password"
+dd_secret_key = "change-me-random-secret-key-min-50-chars"

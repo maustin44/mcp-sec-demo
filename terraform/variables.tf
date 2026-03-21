@@ -15,3 +15,15 @@ variable "environment" {
   type        = string
   default     = "dev"
 }
+
+variable "db_password" {
+  description = "RDS PostgreSQL password for DefectDojo"
+  type        = string
+  sensitive   = true
+}
+
+variable "dd_secret_key" {
+  description = "DefectDojo Django secret key"
+  type        = string
+  sensitive   = true
+}

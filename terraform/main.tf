@@ -34,3 +34,12 @@ module "spa_hosting" {
   project     = var.project
   environment = var.environment
 }
+
+module "defectdojo" {
+  source        = "./modules/defectdojo"
+  project       = var.project
+  environment   = var.environment
+  aws_region    = var.aws_region
+  db_password   = var.db_password
+  dd_secret_key = var.dd_secret_key
+}
