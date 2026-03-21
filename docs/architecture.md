@@ -10,9 +10,11 @@ This project implements a DevSecOps pipeline that continuously scans a single-pa
 |-----------|-----------|--------|
 | SPA | HTML/JS (static) | Demo application hosted on CloudFront |
 | IaC | Terraform | Reproducible AWS infrastructure |
-| CI/CD | GitHub Actions | Build, test, scan, deploy on every push |
-| SAST | Semgrep | Static code analysis |
-| Dep scan | npm audit / OSV | Dependency vulnerability scanning |
+| CI/CD | GitHub Actions | Build, scan, deploy on every push |
+| SAST | SonarCloud | Static code analysis on every push |
+| DAST | OWASP ZAP | Dynamic attack scan against live app (scheduled) |
+| Dep scan | npm audit | Dependency vulnerability scanning |
+| Secret scan | Gitleaks | Detects secrets committed to the repo |
 | Findings store | DefectDojo | Vulnerability tracking and deduplication |
 | AI triage | Claude + MCP | False positive reduction and contextualisation |
 | Hosting | AWS S3 + CloudFront | Secure, scalable SPA delivery |
@@ -22,23 +24,33 @@ This project implements a DevSecOps pipeline that continuously scans a single-pa
 ```
 Push to main
     │
-    ├─ Build & test (Node)
-    ├─ Semgrep SAST scan
-    └─ Deploy to S3/CloudFront
+    ├── SonarCloud SAST
+    ├── npm audit
+    ├── Gitleaks secret scan
+    └── Deploy to S3/CloudFront (gated on above)
 
-Cron (Mon + Thu)
+Cron (Mon + Thu 08:00 UTC)
     │
-    ├─ Semgrep full scan
-    ├─ npm audit
-    ├─ OWASP ZAP (DAST)
-    ├─ Push results → DefectDojo
-    └─ AI triage agent → annotate findings
+    ├── SonarCloud full scan
+    ├── OWASP ZAP DAST → hits live CloudFront URL
+    ├── npm audit
+    └── Push results → DefectDojo
+            └── AI triage agent → annotate findings
 ```
+
+## Scan tool responsibilities
+
+| Tool | Type | When | Finds |
+|------|------|------|-------|
+| SonarCloud | SAST | Every push + scheduled | Code vulnerabilities, hotspots, bugs |
+| OWASP ZAP | DAST | Scheduled only | Runtime issues, XSS, misconfig headers |
+| npm audit | SCA | Every push + scheduled | Dependency CVEs |
+| Gitleaks | Secret scan | Every push | Hardcoded secrets, tokens |
 
 ## Phases
 
-- **Phase 1** (current): GitHub repo, Terraform AWS infra, CI/CD pipeline, SPA skeleton
-- **Phase 2**: Scheduled scans, DefectDojo deployment
+- **Phase 1** (complete): GitHub repo, Terraform AWS infra, CI/CD pipeline, SPA
+- **Phase 2** (next): Scheduled scans wired to DefectDojo
 - **Phase 3**: AI MCP triage agent
 - **Phase 4**: Reporting and documentation
 
@@ -47,4 +59,4 @@ Cron (Mon + Thu)
 All infrastructure is defined in Terraform. A new environment can be stood up by:
 1. Running `terraform/bootstrap` once
 2. Running `terraform apply` in `terraform/`
-3. Adding the required GitHub secrets (see `docs/aws-setup.md`)
+3. Adding the required GitHub secrets (see `docs/aws-setup.md` and `docs/sonarcloud-setup.md`)

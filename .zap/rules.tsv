@@ -1,0 +1,8 @@
+# ZAP scan rule configuration
+# Format: rule_id\taction\treason
+# Actions: IGNORE, WARN, FAIL
+
+# Ignore informational alerts on static SPA
+10015	IGNORE	Re-examine Cross-domain Policy File - not applicable to SPA
+10027	IGNORE	Info leak via HTML comments - demo app intentional
+90033	IGNORE	Loosely Scoped Cookie - no cookies in static SPA
