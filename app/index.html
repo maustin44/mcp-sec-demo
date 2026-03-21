@@ -20,7 +20,7 @@
         border: 1px solid #334155;
         border-radius: 12px;
         padding: 2.5rem;
-        max-width: 480px;
+        max-width: 520px;
         width: 90%;
         text-align: center;
       }
@@ -38,7 +38,7 @@
       }
       h1 { font-size: 1.6rem; font-weight: 600; margin-bottom: 0.5rem; }
       p  { color: #94a3b8; line-height: 1.6; margin-bottom: 1.5rem; }
-      .stack { display: flex; flex-wrap: wrap; gap: 0.5rem; justify-content: center; }
+      .stack { display: flex; flex-wrap: wrap; gap: 0.5rem; justify-content: center; margin-bottom: 1.5rem; }
       .tag {
         background: #0f172a;
         border: 1px solid #334155;
@@ -46,6 +46,24 @@
         padding: 0.3rem 0.75rem;
         font-size: 0.8rem;
         color: #7dd3fc;
+      }
+      .status {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 0.5rem;
+        font-size: 0.8rem;
+        color: #4ade80;
+      }
+      .dot {
+        width: 8px; height: 8px;
+        background: #4ade80;
+        border-radius: 50%;
+        animation: pulse 2s infinite;
+      }
+      @keyframes pulse {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.3; }
       }
     </style>
   </head>
@@ -60,6 +78,11 @@
         <span class="tag">Claude AI</span>
         <span class="tag">Terraform</span>
         <span class="tag">AWS S3 + CloudFront</span>
+        <span class="tag">GitHub Actions</span>
+      </div>
+      <div class="status">
+        <div class="dot"></div>
+        Deployed via CI/CD &mdash; Phase 1 live
       </div>
     </div>
   </body>
