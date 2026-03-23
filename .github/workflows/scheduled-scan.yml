@@ -51,7 +51,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - name: ZAP baseline scan
         run: |
           mkdir -p ${{ github.workspace }}/zap-output
@@ -65,10 +64,6 @@ jobs:
             -J zap-report.json \
             -I || true
         continue-on-error: true
-
-      - name: Check ZAP output
-        run: ls -la ${{ github.workspace }}/zap-output/ || true
-
       - uses: actions/upload-artifact@v4
         with:
           name: zap-report
@@ -102,34 +97,25 @@ jobs:
     if: always()
     steps:
       - uses: actions/checkout@v4
-
       - name: Create reports directory
         run: mkdir -p reports
-
       - uses: actions/download-artifact@v4
         with:
           name: zap-report
           path: reports/
         continue-on-error: true
-
       - uses: actions/download-artifact@v4
         with:
           name: npm-audit-scheduled
           path: reports/
         continue-on-error: true
-
       - uses: actions/download-artifact@v4
         with:
           name: checkov-results-scheduled
           path: reports/
         continue-on-error: true
-
-      - name: List reports
-        run: ls -la reports/ || true
-
       - name: Install dependencies
         run: pip install requests
-
       - name: Push to DefectDojo
         run: python agents/defectdojo_push.py
         env:
@@ -138,3 +124,79 @@ jobs:
           DEFECTDOJO_ENGAGEMENT_ID: ${{ secrets.DEFECTDOJO_ENGAGEMENT_ID }}
           REPORTS_DIR: reports/
         continue-on-error: true
+
+  ai-triage:
+    name: AI triage (Claude)
+    runs-on: ubuntu-latest
+    needs: push-to-defectdojo
+    if: always()
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: pip install requests anthropic
+      - name: Run AI triage agent
+        run: python agents/context_triage_agent.py
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          DEFECTDOJO_URL: ${{ secrets.DEFECTDOJO_URL }}
+          DEFECTDOJO_API_KEY: ${{ secrets.DEFECTDOJO_API_KEY }}
+          DEFECTDOJO_ENGAGEMENT_ID: ${{ secrets.DEFECTDOJO_ENGAGEMENT_ID }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          MAX_FINDINGS: '20'
+        continue-on-error: true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: triage-summary
+          path: reports/triage-summary.json
+          retention-days: 30
+        continue-on-error: true
+
+  generate-report:
+    name: Generate security report
+    runs-on: ubuntu-latest
+    needs: ai-triage
+    if: always()
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Create reports directory
+        run: mkdir -p reports
+      - uses: actions/download-artifact@v4
+        with:
+          name: triage-summary
+          path: reports/
+        continue-on-error: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: zap-report
+          path: reports/
+        continue-on-error: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: npm-audit-scheduled
+          path: reports/
+        continue-on-error: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: checkov-results-scheduled
+          path: reports/
+        continue-on-error: true
+      - name: Install dependencies
+        run: pip install requests
+      - name: Generate AI security report
+        run: python agents/report_generator.py
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          REPORTS_DIR: reports/
+        continue-on-error: true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: security-report
+          path: reports/security-report.md
+          retention-days: 90
