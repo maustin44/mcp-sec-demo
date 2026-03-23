@@ -1,5 +1,6 @@
 # -----------------------------------------------------------------------
 # DefectDojo on ECS Fargate + RDS PostgreSQL + ElastiCache Redis
+# Uses defectdojo-nginx image which bundles nginx + django + static files
 # -----------------------------------------------------------------------
 
 data "aws_availability_zones" "available" {}
@@ -69,9 +70,10 @@ resource "aws_security_group" "alb" {
 resource "aws_security_group" "ecs" {
   name   = "${var.project}-ecs-sg"
   vpc_id = aws_vpc.defectdojo.id
+  # nginx listens on 8080
   ingress {
-    from_port       = 8081
-    to_port         = 8081
+    from_port       = 8080
+    to_port         = 8080
     protocol        = "tcp"
     security_groups = [aws_security_group.alb.id]
   }
@@ -181,7 +183,6 @@ resource "aws_iam_role_policy_attachment" "ecs_task_execution" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
 }
 
-# SSM policy for ECS exec
 resource "aws_iam_role_policy" "ecs_task_ssm" {
   name = "${var.project}-ecs-ssm"
   role = aws_iam_role.ecs_task_execution.id
@@ -201,6 +202,7 @@ resource "aws_iam_role_policy" "ecs_task_ssm" {
 }
 
 # --- ECS Task Definition ---
+# Uses defectdojo-nginx image: bundles nginx (static files) + uwsgi (django)
 resource "aws_ecs_task_definition" "defectdojo" {
   family                   = "${var.project}-${var.environment}"
   network_mode             = "awsvpc"
@@ -213,9 +215,9 @@ resource "aws_ecs_task_definition" "defectdojo" {
   container_definitions = jsonencode([
     {
       name      = "defectdojo"
-      image     = "defectdojo/defectdojo-django:latest"
+      image     = "defectdojo/defectdojo-nginx:latest"
       essential = true
-      portMappings = [{ containerPort = 8081, hostPort = 8081 }]
+      portMappings = [{ containerPort = 8080, hostPort = 8080 }]
       environment = [
         { name = "DD_DATABASE_URL",          value = "postgresql://defectdojo:${var.db_password}@${aws_db_instance.defectdojo.address}:5432/defectdojo" },
         { name = "DD_CELERY_BROKER_URL",     value = "redis://${aws_elasticache_cluster.defectdojo.cache_nodes[0].address}:6379/0" },
@@ -223,9 +225,7 @@ resource "aws_ecs_task_definition" "defectdojo" {
         { name = "DD_ALLOWED_HOSTS",         value = "*" },
         { name = "DD_DJANGO_ADMIN_ENABLED",  value = "true" },
         { name = "DD_SESSION_COOKIE_SECURE", value = "False" },
-        { name = "DD_PORT",                  value = "8081" },
-        { name = "DD_WHITENOISE",            value = "True" },
-        { name = "DJANGO_SETTINGS_MODULE",   value = "dojo.settings.settings" }
+        { name = "NGINX_METRICS_ENABLED",    value = "false" }
       ]
       logConfiguration = {
         logDriver = "awslogs"
@@ -256,7 +256,7 @@ resource "aws_lb" "defectdojo" {
 
 resource "aws_lb_target_group" "defectdojo" {
   name        = "${var.project}-${var.environment}-tg"
-  port        = 8081
+  port        = 8080
   protocol    = "HTTP"
   vpc_id      = aws_vpc.defectdojo.id
   target_type = "ip"
@@ -299,7 +299,7 @@ resource "aws_ecs_service" "defectdojo" {
   load_balancer {
     target_group_arn = aws_lb_target_group.defectdojo.arn
     container_name   = "defectdojo"
-    container_port   = 8081
+    container_port   = 8080
   }
 
   depends_on = [aws_lb_listener.defectdojo, aws_elasticache_cluster.defectdojo]
