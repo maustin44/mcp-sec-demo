@@ -22,7 +22,7 @@ from datetime import date
 
 ANTHROPIC_API_KEY = os.environ.get('ANTHROPIC_API_KEY', '')
 REPORTS_DIR       = Path(os.environ.get('REPORTS_DIR', 'reports'))
-MODEL             = 'claude-sonnet-4-20250514'
+MODEL             = 'claude-sonnet-4-6'
 
 
 def read_json(path):
@@ -73,15 +73,15 @@ Findings:
 
     zap_text = ''
     if zap_data:
-        alerts = zap_data.get('site', [{}])[0].get('alerts', []) if isinstance(zap_data.get('site'), list) else []
+        site = zap_data.get('site', [])
+        alerts = site[0].get('alerts', []) if isinstance(site, list) and site else []
         zap_text = f'\n## DAST Findings (OWASP ZAP)\n- Alerts found: {len(alerts)}\n'
         for a in alerts[:10]:
             zap_text += f"- [{a.get('riskdesc', '?')}] {a.get('alert', 'Unknown')}\n"
 
     npm_text = ''
     if npm_data:
-        vulns = npm_data.get('vulnerabilities', {})
-        meta  = npm_data.get('metadata', {}).get('vulnerabilities', {})
+        meta = npm_data.get('metadata', {}).get('vulnerabilities', {})
         npm_text = f"""\n## Dependency Vulnerabilities (npm audit)\n- Critical: {meta.get('critical', 0)}\n- High: {meta.get('high', 0)}\n- Moderate: {meta.get('moderate', 0)}\n- Low: {meta.get('low', 0)}\n"""
 
     checkov_text = ''

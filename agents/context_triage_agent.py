@@ -32,7 +32,7 @@ DEFECTDOJO_API_KEY   = os.environ.get('DEFECTDOJO_API_KEY', '')
 ENGAGEMENT_ID        = os.environ.get('DEFECTDOJO_ENGAGEMENT_ID', '')
 GITHUB_TOKEN         = os.environ.get('GITHUB_TOKEN', '')
 GITHUB_REPO          = os.environ.get('GITHUB_REPOSITORY', '')
-MODEL                = 'claude-sonnet-4-20250514'
+MODEL                = 'claude-sonnet-4-6'
 MAX_FINDINGS         = int(os.environ.get('MAX_FINDINGS', '20'))
 
 
@@ -158,7 +158,7 @@ Respond in this exact JSON format:
 
 def post_note_to_defectdojo(finding_id, verdict_data):
     """Write the triage verdict back to DefectDojo as a finding note."""
-    verdict   = verdict_data.get('verdict', 'needs_review')
+    verdict    = verdict_data.get('verdict', 'needs_review')
     confidence = verdict_data.get('confidence', 'low')
     reasoning  = verdict_data.get('reasoning', '')
     remediation = verdict_data.get('remediation', '')
@@ -248,7 +248,6 @@ def main():
     print(f'  Errors:          {verdicts["error"]}')
     print('[triage] Done.')
 
-    # Write summary for report generation
     summary = {
         'total': len(findings),
         'verdicts': verdicts,
