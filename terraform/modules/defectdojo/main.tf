@@ -1,6 +1,6 @@
 # -----------------------------------------------------------------------
 # DefectDojo on ECS Fargate + RDS PostgreSQL + ElastiCache Redis
-# Uses defectdojo-django image with DD_WHITENOISE=True + collectstatic on boot
+# Uses defectdojo-django image with collectstatic on boot + DD_WHITENOISE
 # -----------------------------------------------------------------------
 
 data "aws_availability_zones" "available" {}
@@ -216,7 +216,6 @@ resource "aws_ecs_task_definition" "defectdojo" {
       image     = "defectdojo/defectdojo-django:latest"
       essential = true
       portMappings = [{ containerPort = 8081, hostPort = 8081 }]
-      # Run collectstatic before starting uWSGI so CSS/JS are served by WhiteNoise
       command = [
         "/bin/bash", "-c",
         "python manage.py collectstatic --noinput && /entrypoint-uwsgi.sh"
@@ -258,12 +257,17 @@ resource "aws_lb" "defectdojo" {
   subnets            = aws_subnet.public[*].id
 }
 
+# Use name_prefix so Terraform never tries to delete/recreate by name
 resource "aws_lb_target_group" "defectdojo" {
-  name        = "${var.project}-${var.environment}-tg"
+  name_prefix = "dd-tg-"
   port        = 8081
   protocol    = "HTTP"
   vpc_id      = aws_vpc.defectdojo.id
   target_type = "ip"
+
+  lifecycle {
+    create_before_destroy = true
+  }
 
   health_check {
     path                = "/login"
@@ -282,6 +286,10 @@ resource "aws_lb_listener" "defectdojo" {
   default_action {
     type             = "forward"
     target_group_arn = aws_lb_target_group.defectdojo.arn
+  }
+
+  lifecycle {
+    create_before_destroy = true
   }
 }
 
