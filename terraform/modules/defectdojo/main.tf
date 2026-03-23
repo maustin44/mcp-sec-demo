@@ -1,8 +1,10 @@
 # -----------------------------------------------------------------------
-# DefectDojo on ECS Fargate + RDS PostgreSQL
+# DefectDojo on ECS Fargate + RDS PostgreSQL + ElastiCache Redis
 # -----------------------------------------------------------------------
 
-# --- Networking ---
+data "aws_availability_zones" "available" {}
+
+# --- VPC & Networking ---
 resource "aws_vpc" "defectdojo" {
   cidr_block           = "10.0.0.0/16"
   enable_dns_hostnames = true
@@ -45,8 +47,6 @@ resource "aws_route_table_association" "public" {
   subnet_id      = aws_subnet.public[count.index].id
   route_table_id = aws_route_table.public.id
 }
-
-data "aws_availability_zones" "available" {}
 
 # --- Security Groups ---
 resource "aws_security_group" "alb" {
@@ -92,6 +92,29 @@ resource "aws_security_group" "rds" {
     protocol        = "tcp"
     security_groups = [aws_security_group.ecs.id]
   }
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+
+resource "aws_security_group" "redis" {
+  name   = "${var.project}-redis-sg"
+  vpc_id = aws_vpc.defectdojo.id
+  ingress {
+    from_port       = 6379
+    to_port         = 6379
+    protocol        = "tcp"
+    security_groups = [aws_security_group.ecs.id]
+  }
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
 }
 
 # --- RDS PostgreSQL ---
@@ -115,6 +138,24 @@ resource "aws_db_instance" "defectdojo" {
   vpc_security_group_ids = [aws_security_group.rds.id]
   skip_final_snapshot    = true
   deletion_protection    = false
+}
+
+# --- ElastiCache Redis (Celery broker) ---
+resource "aws_elasticache_subnet_group" "defectdojo" {
+  name       = "${var.project}-${var.environment}-redis-subnet"
+  subnet_ids = aws_subnet.private[*].id
+}
+
+resource "aws_elasticache_cluster" "defectdojo" {
+  cluster_id           = "${var.project}-${var.environment}"
+  engine               = "redis"
+  node_type            = "cache.t3.micro"
+  num_cache_nodes      = 1
+  parameter_group_name = "default.redis7"
+  engine_version       = "7.0"
+  port                 = 6379
+  subnet_group_name    = aws_elasticache_subnet_group.defectdojo.name
+  security_group_ids   = [aws_security_group.redis.id]
 }
 
 # --- ECS Cluster ---
@@ -156,17 +197,19 @@ resource "aws_ecs_task_definition" "defectdojo" {
       essential = true
       portMappings = [{ containerPort = 8080, hostPort = 8080 }]
       environment = [
-        { name = "DD_DATABASE_URL", value = "postgresql://defectdojo:${var.db_password}@${aws_db_instance.defectdojo.address}:5432/defectdojo" },
-        { name = "DD_SECRET_KEY",   value = var.dd_secret_key },
-        { name = "DD_ALLOWED_HOSTS", value = "*" },
-        { name = "DD_DJANGO_ADMIN_ENABLED", value = "true" }
+        { name = "DD_DATABASE_URL",         value = "postgresql://defectdojo:${var.db_password}@${aws_db_instance.defectdojo.address}:5432/defectdojo" },
+        { name = "DD_CELERY_BROKER_URL",    value = "redis://${aws_elasticache_cluster.defectdojo.cache_nodes[0].address}:6379/0" },
+        { name = "DD_SECRET_KEY",           value = var.dd_secret_key },
+        { name = "DD_ALLOWED_HOSTS",        value = "*" },
+        { name = "DD_DJANGO_ADMIN_ENABLED", value = "true" },
+        { name = "DD_SESSION_COOKIE_SECURE", value = "False" }
       ]
       logConfiguration = {
         logDriver = "awslogs"
         options = {
-          awslogs-group         = "/ecs/${var.project}-${var.environment}"
-          awslogs-region        = var.aws_region
-          awslogs-stream-prefix = "defectdojo"
+          "awslogs-group"         = "/ecs/${var.project}-${var.environment}"
+          "awslogs-region"        = var.aws_region
+          "awslogs-stream-prefix" = "defectdojo"
         }
       }
     }
@@ -196,11 +239,12 @@ resource "aws_lb_target_group" "defectdojo" {
   target_type = "ip"
 
   health_check {
-    path                = "/"
+    path                = "/login"
     healthy_threshold   = 2
     unhealthy_threshold = 5
     timeout             = 30
     interval            = 60
+    matcher             = "200,301,302"
   }
 }
 
@@ -234,5 +278,5 @@ resource "aws_ecs_service" "defectdojo" {
     container_port   = 8080
   }
 
-  depends_on = [aws_lb_listener.defectdojo]
+  depends_on = [aws_lb_listener.defectdojo, aws_elasticache_cluster.defectdojo]
 }
