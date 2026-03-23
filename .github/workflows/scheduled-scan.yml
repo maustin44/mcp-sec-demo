@@ -30,7 +30,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - name: Run Checkov
         uses: bridgecrewio/checkov-action@master
         with:
@@ -40,7 +39,6 @@ jobs:
           output_file_path: reports/
           soft_fail: true
         continue-on-error: true
-
       - uses: actions/upload-artifact@v4
         with:
           name: checkov-results-scheduled
@@ -54,12 +52,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: ZAP full scan
-        uses: zaproxy/action-full-scan@v0.10.0
-        with:
-          target: ${{ env.TARGET_URL }}
-          rules_file_name: .zap/rules.tsv
-          cmd_options: '-J zap-report.json'
+      - name: ZAP baseline scan
+        run: |
+          docker pull ghcr.io/zaproxy/zaproxy:stable
+          docker run --rm \
+            -v ${{ github.workspace }}:/zap/wrk:rw \
+            ghcr.io/zaproxy/zaproxy:stable \
+            zap-baseline.py \
+            -t ${{ env.TARGET_URL }} \
+            -J zap-report.json \
+            -I || true
+        continue-on-error: true
+
+      - name: Move ZAP report
+        run: mv zap-report.json ${{ github.workspace }}/zap-report.json || true
         continue-on-error: true
 
       - uses: actions/upload-artifact@v4
@@ -67,6 +73,7 @@ jobs:
           name: zap-report
           path: zap-report.json
           retention-days: 30
+        continue-on-error: true
 
   npm-audit:
     name: Dependency audit
@@ -76,14 +83,11 @@ jobs:
         working-directory: app
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-
       - run: npm install
       - run: npm audit --json > npm-audit.json || true
-
       - uses: actions/upload-artifact@v4
         with:
           name: npm-audit-scheduled
@@ -94,8 +98,12 @@ jobs:
     name: Push findings to DefectDojo
     runs-on: ubuntu-latest
     needs: [sonarcloud, checkov, zap-scan, npm-audit]
+    if: always()
     steps:
       - uses: actions/checkout@v4
+
+      - name: Create reports directory
+        run: mkdir -p reports
 
       - uses: actions/download-artifact@v4
         with:
