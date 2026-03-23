@@ -1,0 +1,26 @@
+{
+  // VS Code MCP configuration for local AI-assisted security triage
+  // This connects your local VS Code instance to the MCP security agent,
+  // allowing Claude to pull context from your AWS environment and triage findings.
+  //
+  // Prerequisites:
+  //   1. Install the Claude VS Code extension (Anthropic)
+  //   2. Set environment variables (see docs/vscode-mcp-setup.md)
+  //   3. Run: pip install anthropic requests boto3
+  //
+  "servers": {
+    "mcp-sec-demo": {
+      "type": "stdio",
+      "command": "python",
+      "args": ["agents/mcp_server.py"],
+      "env": {
+        "ANTHROPIC_API_KEY": "${env:ANTHROPIC_API_KEY}",
+        "AWS_ACCESS_KEY_ID": "${env:AWS_ACCESS_KEY_ID}",
+        "AWS_SECRET_ACCESS_KEY": "${env:AWS_SECRET_ACCESS_KEY}",
+        "AWS_DEFAULT_REGION": "us-east-1",
+        "DEFECTDOJO_URL": "${env:DEFECTDOJO_URL}",
+        "DEFECTDOJO_API_KEY": "${env:DEFECTDOJO_API_KEY}"
+      }
+    }
+  }
+}
