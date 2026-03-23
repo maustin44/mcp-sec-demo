@@ -181,6 +181,25 @@ resource "aws_iam_role_policy_attachment" "ecs_task_execution" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
 }
 
+# SSM policy for ECS exec (manage.py migrate, debugging)
+resource "aws_iam_role_policy" "ecs_task_ssm" {
+  name = "${var.project}-ecs-ssm"
+  role = aws_iam_role.ecs_task_execution.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Action = [
+        "ssmmessages:CreateControlChannel",
+        "ssmmessages:CreateDataChannel",
+        "ssmmessages:OpenControlChannel",
+        "ssmmessages:OpenDataChannel"
+      ]
+      Resource = "*"
+    }]
+  })
+}
+
 # --- ECS Task Definition ---
 resource "aws_ecs_task_definition" "defectdojo" {
   family                   = "${var.project}-${var.environment}"
@@ -189,6 +208,7 @@ resource "aws_ecs_task_definition" "defectdojo" {
   cpu                      = "1024"
   memory                   = "2048"
   execution_role_arn       = aws_iam_role.ecs_task_execution.arn
+  task_role_arn            = aws_iam_role.ecs_task_execution.arn
 
   container_definitions = jsonencode([
     {
@@ -261,11 +281,12 @@ resource "aws_lb_listener" "defectdojo" {
 
 # --- ECS Service ---
 resource "aws_ecs_service" "defectdojo" {
-  name            = "${var.project}-${var.environment}"
-  cluster         = aws_ecs_cluster.defectdojo.id
-  task_definition = aws_ecs_task_definition.defectdojo.arn
-  desired_count   = 1
-  launch_type     = "FARGATE"
+  name                   = "${var.project}-${var.environment}"
+  cluster                = aws_ecs_cluster.defectdojo.id
+  task_definition        = aws_ecs_task_definition.defectdojo.arn
+  desired_count          = 1
+  launch_type            = "FARGATE"
+  enable_execute_command = true
 
   network_configuration {
     subnets          = aws_subnet.public[*].id
