@@ -70,8 +70,8 @@ resource "aws_security_group" "ecs" {
   name   = "${var.project}-ecs-sg"
   vpc_id = aws_vpc.defectdojo.id
   ingress {
-    from_port       = 8080
-    to_port         = 8080
+    from_port       = 8081
+    to_port         = 8081
     protocol        = "tcp"
     security_groups = [aws_security_group.alb.id]
   }
@@ -195,14 +195,15 @@ resource "aws_ecs_task_definition" "defectdojo" {
       name      = "defectdojo"
       image     = "defectdojo/defectdojo-django:latest"
       essential = true
-      portMappings = [{ containerPort = 8080, hostPort = 8080 }]
+      portMappings = [{ containerPort = 8081, hostPort = 8081 }]
       environment = [
-        { name = "DD_DATABASE_URL",         value = "postgresql://defectdojo:${var.db_password}@${aws_db_instance.defectdojo.address}:5432/defectdojo" },
-        { name = "DD_CELERY_BROKER_URL",    value = "redis://${aws_elasticache_cluster.defectdojo.cache_nodes[0].address}:6379/0" },
-        { name = "DD_SECRET_KEY",           value = var.dd_secret_key },
-        { name = "DD_ALLOWED_HOSTS",        value = "*" },
-        { name = "DD_DJANGO_ADMIN_ENABLED", value = "true" },
-        { name = "DD_SESSION_COOKIE_SECURE", value = "False" }
+        { name = "DD_DATABASE_URL",          value = "postgresql://defectdojo:${var.db_password}@${aws_db_instance.defectdojo.address}:5432/defectdojo" },
+        { name = "DD_CELERY_BROKER_URL",     value = "redis://${aws_elasticache_cluster.defectdojo.cache_nodes[0].address}:6379/0" },
+        { name = "DD_SECRET_KEY",            value = var.dd_secret_key },
+        { name = "DD_ALLOWED_HOSTS",         value = "*" },
+        { name = "DD_DJANGO_ADMIN_ENABLED",  value = "true" },
+        { name = "DD_SESSION_COOKIE_SECURE", value = "False" },
+        { name = "DD_PORT",                  value = "8081" }
       ]
       logConfiguration = {
         logDriver = "awslogs"
@@ -233,7 +234,7 @@ resource "aws_lb" "defectdojo" {
 
 resource "aws_lb_target_group" "defectdojo" {
   name        = "${var.project}-${var.environment}-tg"
-  port        = 8080
+  port        = 8081
   protocol    = "HTTP"
   vpc_id      = aws_vpc.defectdojo.id
   target_type = "ip"
@@ -275,7 +276,7 @@ resource "aws_ecs_service" "defectdojo" {
   load_balancer {
     target_group_arn = aws_lb_target_group.defectdojo.arn
     container_name   = "defectdojo"
-    container_port   = 8080
+    container_port   = 8081
   }
 
   depends_on = [aws_lb_listener.defectdojo, aws_elasticache_cluster.defectdojo]
