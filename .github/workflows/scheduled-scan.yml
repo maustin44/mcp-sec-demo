@@ -54,9 +54,11 @@ jobs:
 
       - name: ZAP baseline scan
         run: |
+          mkdir -p ${{ github.workspace }}/zap-output
+          chmod 777 ${{ github.workspace }}/zap-output
           docker pull ghcr.io/zaproxy/zaproxy:stable
           docker run --rm \
-            -v ${{ github.workspace }}:/zap/wrk:rw \
+            -v ${{ github.workspace }}/zap-output:/zap/wrk:rw \
             ghcr.io/zaproxy/zaproxy:stable \
             zap-baseline.py \
             -t ${{ env.TARGET_URL }} \
@@ -64,14 +66,13 @@ jobs:
             -I || true
         continue-on-error: true
 
-      - name: Move ZAP report
-        run: mv zap-report.json ${{ github.workspace }}/zap-report.json || true
-        continue-on-error: true
+      - name: Check ZAP output
+        run: ls -la ${{ github.workspace }}/zap-output/ || true
 
       - uses: actions/upload-artifact@v4
         with:
           name: zap-report
-          path: zap-report.json
+          path: ${{ github.workspace }}/zap-output/zap-report.json
           retention-days: 30
         continue-on-error: true
 
@@ -122,6 +123,9 @@ jobs:
           name: checkov-results-scheduled
           path: reports/
         continue-on-error: true
+
+      - name: List reports
+        run: ls -la reports/ || true
 
       - name: Install dependencies
         run: pip install requests
