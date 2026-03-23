@@ -181,7 +181,7 @@ resource "aws_iam_role_policy_attachment" "ecs_task_execution" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
 }
 
-# SSM policy for ECS exec (manage.py migrate, debugging)
+# SSM policy for ECS exec
 resource "aws_iam_role_policy" "ecs_task_ssm" {
   name = "${var.project}-ecs-ssm"
   role = aws_iam_role.ecs_task_execution.id
@@ -223,7 +223,9 @@ resource "aws_ecs_task_definition" "defectdojo" {
         { name = "DD_ALLOWED_HOSTS",         value = "*" },
         { name = "DD_DJANGO_ADMIN_ENABLED",  value = "true" },
         { name = "DD_SESSION_COOKIE_SECURE", value = "False" },
-        { name = "DD_PORT",                  value = "8081" }
+        { name = "DD_PORT",                  value = "8081" },
+        { name = "DD_WHITENOISE",            value = "True" },
+        { name = "DJANGO_SETTINGS_MODULE",   value = "dojo.settings.settings" }
       ]
       logConfiguration = {
         logDriver = "awslogs"
