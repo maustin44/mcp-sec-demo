@@ -21,7 +21,14 @@ from datetime import date
 
 ANTHROPIC_API_KEY = os.environ.get('ANTHROPIC_API_KEY', '')
 REPORTS_DIR       = Path(os.environ.get('REPORTS_DIR', 'reports'))
-MODEL             = 'claude-3-5-sonnet-20241022'  # widely available on eval keys
+
+# Model fallback list — tries each in order until one works
+MODELS = [
+    'claude-3-5-sonnet-20241022',
+    'claude-3-5-haiku-20241022',
+    'claude-3-haiku-20240307',
+    'claude-3-sonnet-20240229',
+]
 
 
 def read_json(path):
@@ -31,14 +38,22 @@ def read_json(path):
 
 
 def ask_claude(prompt):
-    r = requests.post(
-        'https://api.anthropic.com/v1/messages',
-        headers={'x-api-key': ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01', 'content-type': 'application/json'},
-        json={'model': MODEL, 'max_tokens': 4096, 'messages': [{'role': 'user', 'content': prompt}]},
-        timeout=120,
-    )
-    r.raise_for_status()
-    return r.json()['content'][0]['text']
+    """Try each model in the fallback list until one succeeds."""
+    last_error = None
+    for model in MODELS:
+        print(f'[report] Trying model: {model}')
+        r = requests.post(
+            'https://api.anthropic.com/v1/messages',
+            headers={'x-api-key': ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01', 'content-type': 'application/json'},
+            json={'model': model, 'max_tokens': 4096, 'messages': [{'role': 'user', 'content': prompt}]},
+            timeout=120,
+        )
+        if r.status_code == 200:
+            print(f'[report] Success with model: {model}')
+            return r.json()['content'][0]['text']
+        print(f'[report] Model {model} failed ({r.status_code}): {r.text[:300]}')
+        last_error = r
+    raise Exception(f'All models failed. Last error: {last_error.status_code} {last_error.text[:300]}')
 
 
 def build_prompt(triage_summary, zap_data, npm_data, checkov_data):
@@ -48,10 +63,13 @@ def build_prompt(triage_summary, zap_data, npm_data, checkov_data):
     if triage_summary:
         v = triage_summary.get('verdicts', {})
         fl = triage_summary.get('findings', [])
-        lines = [f"## AI Triage Results", f"- Total: {triage_summary.get('total', 0)}",
-                 f"- True positives: {v.get('true_positive', 0)}",
-                 f"- False positives: {v.get('false_positive', 0)}",
-                 f"- Needs review: {v.get('needs_review', 0)}", ""]
+        lines = [
+            '## AI Triage Results',
+            f"- Total: {triage_summary.get('total', 0)}",
+            f"- True positives: {v.get('true_positive', 0)}",
+            f"- False positives: {v.get('false_positive', 0)}",
+            f"- Needs review: {v.get('needs_review', 0)}", ''
+        ]
         for f in fl[:20]:
             lines.append(f"- [{f.get('severity','?')}] {f.get('title','Unknown')} ({f.get('file_path','N/A')})")
         sections.append('\n'.join(lines))
@@ -59,7 +77,7 @@ def build_prompt(triage_summary, zap_data, npm_data, checkov_data):
     if zap_data:
         site = zap_data.get('site', [])
         alerts = site[0].get('alerts', []) if isinstance(site, list) and site else []
-        lines = [f"## DAST Findings (ZAP) - {len(alerts)} alerts"]
+        lines = [f'## DAST Findings (ZAP) - {len(alerts)} alerts']
         for a in alerts[:10]: lines.append(f"- [{a.get('riskdesc','?')}] {a.get('alert','Unknown')}")
         sections.append('\n'.join(lines))
 
@@ -97,7 +115,6 @@ def main():
         print('[report] ANTHROPIC_API_KEY not set — skipping'); sys.exit(0)
 
     REPORTS_DIR.mkdir(exist_ok=True)
-    print(f'[report] Model: {MODEL}')
 
     triage  = read_json(REPORTS_DIR / 'triage-summary.json')
     zap     = read_json(REPORTS_DIR / 'zap-report.json')
@@ -108,7 +125,11 @@ def main():
         print('[report] No scan data found — skipping'); sys.exit(0)
 
     print('[report] Generating report with Claude...')
-    report = ask_claude(build_prompt(triage, zap, npm, checkov))
+    try:
+        report = ask_claude(build_prompt(triage, zap, npm, checkov))
+    except Exception as e:
+        print(f'[report] Failed to generate report: {e}')
+        sys.exit(1)
 
     out = REPORTS_DIR / 'security-report.md'
     out.write_text(report)
