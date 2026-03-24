@@ -6,18 +6,13 @@ Pulls open findings from DefectDojo, sends each one with its surrounding
 code context to Claude via the Anthropic API, and writes a triage verdict
 back to DefectDojo as a note.
 
-Verdict values:
-  true_positive   — confirmed vulnerability, should be fixed
-  false_positive  — not a real issue given the context
-  needs_review    — ambiguous, requires human judgment
-
 Environment variables required:
   ANTHROPIC_API_KEY
   DEFECTDOJO_URL
   DEFECTDOJO_API_KEY
-  DEFECTDOJO_ENGAGEMENT_ID   (optional — filters to one engagement)
-  GITHUB_TOKEN               (optional — for fetching code context)
-  GITHUB_REPOSITORY          (optional — owner/repo for code context)
+  DEFECTDOJO_ENGAGEMENT_ID   (optional)
+  GITHUB_TOKEN               (optional)
+  GITHUB_REPOSITORY          (optional)
 """
 
 import os
@@ -32,16 +27,12 @@ DEFECTDOJO_API_KEY = os.environ.get('DEFECTDOJO_API_KEY', '')
 ENGAGEMENT_ID      = os.environ.get('DEFECTDOJO_ENGAGEMENT_ID', '')
 GITHUB_TOKEN       = os.environ.get('GITHUB_TOKEN', '')
 GITHUB_REPO        = os.environ.get('GITHUB_REPOSITORY', '')
-MODEL              = 'claude-3-5-sonnet-20241022'  # widely available on eval keys
+MODEL              = 'claude-sonnet-4-6'
 MAX_FINDINGS       = int(os.environ.get('MAX_FINDINGS', '20'))
 
 
 def dd_headers():
-    return {
-        'Authorization': f'Token {DEFECTDOJO_API_KEY}',
-        'Accept': 'application/json',
-        'Content-Type': 'application/json',
-    }
+    return {'Authorization': f'Token {DEFECTDOJO_API_KEY}', 'Accept': 'application/json', 'Content-Type': 'application/json'}
 
 
 def get_open_findings():
@@ -57,8 +48,11 @@ def get_code_context(file_path, line_number, context_lines=15):
     if not GITHUB_TOKEN or not GITHUB_REPO or not file_path:
         return None
     try:
-        url = f'https://api.github.com/repos/{GITHUB_REPO}/contents/{file_path}'
-        r = requests.get(url, headers={'Authorization': f'token {GITHUB_TOKEN}', 'Accept': 'application/vnd.github.v3.raw'}, timeout=15)
+        r = requests.get(
+            f'https://api.github.com/repos/{GITHUB_REPO}/contents/{file_path}',
+            headers={'Authorization': f'token {GITHUB_TOKEN}', 'Accept': 'application/vnd.github.v3.raw'},
+            timeout=15,
+        )
         if r.status_code != 200:
             return None
         lines = r.text.splitlines()
@@ -70,36 +64,22 @@ def get_code_context(file_path, line_number, context_lines=15):
 
 
 def ask_claude(finding, code_context):
-    severity    = finding.get('severity', 'Unknown')
-    title       = finding.get('title', 'Unknown')
-    description = finding.get('description', '')
-    file_path   = finding.get('file_path', '')
-    line        = finding.get('line', '')
-    scanner     = finding.get('test', {}).get('test_type', {}).get('name', '') if isinstance(finding.get('test'), dict) else ''
-    cwe         = finding.get('cwe', '')
-
     context_block = ''
     if code_context:
-        context_block = f'\n\nCode context ({file_path}, around line {line}):\n```\n{code_context}\n```'
+        context_block = f'\n\nCode context ({finding.get("file_path")}, line {finding.get("line")}):\n```\n{code_context}\n```'
 
-    prompt = f"""You are a senior application security engineer performing triage on static analysis findings.
+    prompt = f"""You are a senior application security engineer triaging static analysis findings.
 
-Finding details:
-- Title: {title}
-- Severity: {severity}
-- Scanner: {scanner}
-- File: {file_path}
-- Line: {line}
-- CWE: {cwe}
-- Description: {description}{context_block}
+Finding:
+- Title: {finding.get('title')}
+- Severity: {finding.get('severity')}
+- File: {finding.get('file_path')}
+- Line: {finding.get('line')}
+- CWE: {finding.get('cwe')}
+- Description: {finding.get('description', '')[:500]}{context_block}
 
-Analyse whether this is a real vulnerability or a false positive. Respond ONLY in this exact JSON format:
-{{
-  "verdict": "true_positive",
-  "confidence": "high",
-  "reasoning": "explanation here",
-  "remediation": "fix suggestion or null"
-}}
+Respond ONLY in this exact JSON format (no markdown, no explanation):
+{{"verdict":"true_positive","confidence":"high","reasoning":"explanation","remediation":"fix or null"}}
 verdict must be one of: true_positive, false_positive, needs_review"""
 
     r = requests.post(
@@ -108,35 +88,32 @@ verdict must be one of: true_positive, false_positive, needs_review"""
         json={'model': MODEL, 'max_tokens': 1024, 'messages': [{'role': 'user', 'content': prompt}]},
         timeout=60,
     )
-    r.raise_for_status()
+    if r.status_code != 200:
+        raise Exception(f'{r.status_code}: {r.text[:300]}')
     content = r.json()['content'][0]['text'].strip()
     if content.startswith('```'):
         content = content.split('```')[1]
-        if content.startswith('json'):
-            content = content[4:]
+        if content.startswith('json'): content = content[4:]
     return json.loads(content.strip())
 
 
-def post_note_to_defectdojo(finding_id, verdict_data):
+def post_note(finding_id, verdict_data):
     verdict     = verdict_data.get('verdict', 'needs_review')
     confidence  = verdict_data.get('confidence', 'low')
     reasoning   = verdict_data.get('reasoning', '')
     remediation = verdict_data.get('remediation', '')
     icons = {'true_positive': '⚠️', 'false_positive': '✅', 'needs_review': '🔍'}
-    note_text = f"{icons.get(verdict, '🔍')} **AI Triage: {verdict.replace('_', ' ').title()}** (confidence: {confidence})\n\n**Reasoning:** {reasoning}"
-    if remediation:
-        note_text += f'\n\n**Remediation:** {remediation}'
-    note_text += '\n\n*Triaged by Claude AI — mcp-sec-demo*'
-
-    r = requests.post(f'{DEFECTDOJO_URL}/api/v2/notes/', headers=dd_headers(), json={'entry': note_text, 'note_type': None}, timeout=30)
+    note = f"{icons.get(verdict,'🔍')} **AI Triage: {verdict.replace('_',' ').title()}** (confidence: {confidence})\n\n**Reasoning:** {reasoning}"
+    if remediation: note += f'\n\n**Remediation:** {remediation}'
+    note += '\n\n*Triaged by Claude AI — mcp-sec-demo*'
+    r = requests.post(f'{DEFECTDOJO_URL}/api/v2/notes/', headers=dd_headers(), json={'entry': note, 'note_type': None}, timeout=30)
     if r.status_code not in (200, 201):
-        print(f'  [warn] Note failed ({r.status_code}): {r.text[:200]}')
-        return None
+        print(f'  [warn] Note failed: {r.status_code}')
+        return
     note_id = r.json().get('id')
     requests.post(f'{DEFECTDOJO_URL}/api/v2/findings/{finding_id}/notes/', headers=dd_headers(), json={'note': note_id}, timeout=30)
     if verdict == 'false_positive':
         requests.patch(f'{DEFECTDOJO_URL}/api/v2/findings/{finding_id}/', headers=dd_headers(), json={'false_p': True, 'active': False}, timeout=30)
-    return note_id
 
 
 def main():
@@ -150,22 +127,22 @@ def main():
     print(f'[triage] {len(findings)} findings to triage')
 
     verdicts = {'true_positive': 0, 'false_positive': 0, 'needs_review': 0, 'error': 0}
-    for finding in findings:
-        fid, title, sev = finding['id'], finding.get('title', 'Unknown'), finding.get('severity', '?')
-        print(f'  [{sev}] #{fid}: {title[:60]}')
+    for f in findings:
+        print(f'  [{f.get("severity","?")}] #{f["id"]}: {f.get("title","?")[:60]}')
         try:
-            verdict_data = ask_claude(finding, get_code_context(finding.get('file_path'), finding.get('line')))
-            verdict = verdict_data.get('verdict', 'needs_review')
-            verdicts[verdict] = verdicts.get(verdict, 0) + 1
-            print(f'       → {verdict} ({verdict_data.get("confidence", "?")})')
-            post_note_to_defectdojo(fid, verdict_data)
+            vd = ask_claude(f, get_code_context(f.get('file_path'), f.get('line')))
+            v  = vd.get('verdict', 'needs_review')
+            verdicts[v] = verdicts.get(v, 0) + 1
+            print(f'       → {v} ({vd.get("confidence","?")})')
+            post_note(f['id'], vd)
         except Exception as e:
             print(f'       → error: {e}'); verdicts['error'] += 1
 
-    print(f'\n[triage] true_positive={verdicts["true_positive"]} false_positive={verdicts["false_positive"]} needs_review={verdicts["needs_review"]} errors={verdicts["error"]}')
+    print(f'\n[triage] tp={verdicts["true_positive"]} fp={verdicts["false_positive"]} nr={verdicts["needs_review"]} err={verdicts["error"]}')
     Path('reports').mkdir(exist_ok=True)
     with open('reports/triage-summary.json', 'w') as fh:
-        json.dump({'total': len(findings), 'verdicts': verdicts, 'findings': [{'id': f['id'], 'title': f.get('title'), 'severity': f.get('severity'), 'file_path': f.get('file_path')} for f in findings]}, fh, indent=2)
+        json.dump({'total': len(findings), 'verdicts': verdicts,
+                   'findings': [{'id': f['id'], 'title': f.get('title'), 'severity': f.get('severity'), 'file_path': f.get('file_path')} for f in findings]}, fh, indent=2)
     print('[triage] Done.')
 
 

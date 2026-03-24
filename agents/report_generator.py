@@ -21,18 +21,7 @@ from datetime import date
 
 ANTHROPIC_API_KEY = os.environ.get('ANTHROPIC_API_KEY', '')
 REPORTS_DIR       = Path(os.environ.get('REPORTS_DIR', 'reports'))
-
-# All available model strings to try
-MODELS = [
-    'claude-3-5-sonnet-20241022',
-    'claude-3-5-haiku-20241022',
-    'claude-3-haiku-20240307',
-    'claude-3-opus-20240229',
-    'claude-3-sonnet-20240229',
-    'claude-2.1',
-    'claude-2.0',
-    'claude-instant-1.2',
-]
+MODEL             = 'claude-sonnet-4-6'
 
 
 def read_json(path):
@@ -41,35 +30,17 @@ def read_json(path):
     except Exception: return None
 
 
-def check_api_key():
-    """List available models to verify API key works."""
-    print('[report] Checking API key via /v1/models...')
-    r = requests.get(
-        'https://api.anthropic.com/v1/models',
-        headers={'x-api-key': ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01'},
-        timeout=15,
-    )
-    print(f'[report] /v1/models status: {r.status_code}')
-    print(f'[report] /v1/models response: {r.text[:500]}')
-    return r.status_code == 200
-
-
 def ask_claude(prompt):
-    last_error = None
-    for model in MODELS:
-        print(f'[report] Trying model: {model}')
-        r = requests.post(
-            'https://api.anthropic.com/v1/messages',
-            headers={'x-api-key': ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01', 'content-type': 'application/json'},
-            json={'model': model, 'max_tokens': 4096, 'messages': [{'role': 'user', 'content': prompt}]},
-            timeout=120,
-        )
-        if r.status_code == 200:
-            print(f'[report] Success with model: {model}')
-            return r.json()['content'][0]['text']
-        print(f'[report] {model} failed ({r.status_code}): {r.text[:300]}')
-        last_error = r
-    raise Exception(f'All models failed. Last: {last_error.status_code} {last_error.text[:300]}')
+    print(f'[report] Calling model: {MODEL}')
+    r = requests.post(
+        'https://api.anthropic.com/v1/messages',
+        headers={'x-api-key': ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01', 'content-type': 'application/json'},
+        json={'model': MODEL, 'max_tokens': 4096, 'messages': [{'role': 'user', 'content': prompt}]},
+        timeout=120,
+    )
+    if r.status_code != 200:
+        raise Exception(f'{r.status_code}: {r.text[:400]}')
+    return r.json()['content'][0]['text']
 
 
 def build_prompt(triage_summary, zap_data, npm_data, checkov_data):
@@ -101,23 +72,25 @@ def build_prompt(triage_summary, zap_data, npm_data, checkov_data):
     return f"""You are a senior security consultant writing a formal security assessment report.
 Date: {today}
 Project: mcp-sec-demo DevSecOps Pipeline
+
 Scan data:
 {data_block}
+
 Write a professional Markdown security report with:
-1. Executive Summary
+1. Executive Summary (non-technical, for management)
 2. Methodology
-3. Key Findings
+3. Key Findings (by severity)
 4. Risk Assessment
-5. Recommendations
+5. Recommendations (prioritised)
 6. Conclusion
-Include a findings summary table."""
+
+Include a findings summary table. Be concise and actionable."""
 
 
 def main():
     if not ANTHROPIC_API_KEY:
         print('[report] ANTHROPIC_API_KEY not set — skipping'); sys.exit(0)
     REPORTS_DIR.mkdir(exist_ok=True)
-    check_api_key()
     triage  = read_json(REPORTS_DIR / 'triage-summary.json')
     zap     = read_json(REPORTS_DIR / 'zap-report.json')
     npm     = read_json(REPORTS_DIR / 'npm-audit.json')
