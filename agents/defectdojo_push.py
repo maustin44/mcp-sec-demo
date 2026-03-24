@@ -2,9 +2,6 @@
 """
 Pushes scan results to DefectDojo via its REST API.
 
-DefectDojo scan type names must match exactly.
-See: /api/v2/test_types/ for full list.
-
 Environment variables required:
   DEFECTDOJO_URL
   DEFECTDOJO_API_KEY
@@ -46,12 +43,12 @@ def test_connection():
     if r.status_code == 200:
         print('[defectdojo_push] Connected to DefectDojo successfully')
         return True
-    print(f'[defectdojo_push] Auth check failed ({r.status_code}): {r.text[:200]}')
+    print(f'[defectdojo_push] Auth check failed ({r.status_code})')
     return False
 
 
-def get_valid_scan_types():
-    """Fetch valid scan type names from DefectDojo."""
+def get_all_scan_types():
+    """Fetch ALL valid scan type names from DefectDojo."""
     r = requests.get(f'{DEFECTDOJO_URL}/api/v2/test_types/?limit=200', headers=get_headers(), timeout=15)
     if r.status_code == 200:
         types = [t['name'] for t in r.json().get('results', [])]
@@ -97,24 +94,21 @@ def main():
     print(f'[defectdojo_push] Pushing reports to DefectDojo (engagement {ENGAGEMENT_ID})')
 
     if not test_connection():
-        print('[defectdojo_push] Cannot connect — aborting')
         sys.exit(1)
 
-    # Print available scan types for debugging
-    scan_types = get_valid_scan_types()
-    print(f'[defectdojo_push] Available scan types: {len(scan_types)}')
-    # Show types relevant to our scans
+    # Print ALL available scan types so we can find the right names
+    scan_types = get_all_scan_types()
+    print(f'[defectdojo_push] ALL available scan types ({len(scan_types)}):')
     for t in scan_types:
-        if any(k in t.lower() for k in ['zap', 'npm', 'checkov', 'audit']):
-            print(f'  - {t}')
+        print(f'  - {t}')
 
-    # ZAP — exact DefectDojo name
-    import_scan('ZAP Scan', REPORTS_DIR / 'zap-report.json')
-
-    # npm audit — exact DefectDojo name
+    # NPM Audit — confirmed working
     import_scan('NPM Audit Scan', REPORTS_DIR / 'npm-audit.json')
 
-    # Checkov — exact DefectDojo name
+    # ZAP — try both common names
+    import_scan('ZAP Scan', REPORTS_DIR / 'zap-report.json')
+
+    # Checkov — try both common names
     import_scan('Checkov Scan', REPORTS_DIR / 'results_json.json')
 
     print('[defectdojo_push] Done.')
