@@ -61,22 +61,19 @@ def import_scan(scan_type, file_path):
 
 def main():
     check_config()
-
     r = requests.get(f'{DEFECTDOJO_URL}/api/v2/users/', headers=headers(), timeout=15)
     if r.status_code != 200:
         print(f'[push] Auth failed: {r.status_code}'); sys.exit(1)
     print('[push] Connected OK')
 
-    # Only use scan types that exist in this DefectDojo instance
-    # NPM Audit Scan is confirmed present
-    import_scan('NPM Audit Scan', REPORTS_DIR / 'npm-audit.json')
+    # Print current scan type count
+    r2 = requests.get(f'{DEFECTDOJO_URL}/api/v2/test_types/?limit=5', headers=headers(), timeout=15)
+    total = r2.json().get('count', '?')
+    print(f'[push] DefectDojo has {total} scan types installed')
 
-    # ZAP and Checkov parsers not installed — import raw JSON as generic findings
-    # These would need DefectDojo admin to install the parsers
-    for f in [REPORTS_DIR / 'zap-report.json', REPORTS_DIR / 'results_json.json']:
-        if f.exists():
-            print(f'[push] NOTE: {f.name} cannot be imported — ZAP/Checkov parsers not installed in DefectDojo')
-            print(f'[push] To fix: go to DefectDojo Admin → System Settings and enable additional parsers')
+    import_scan('NPM Audit Scan',  REPORTS_DIR / 'npm-audit.json')
+    import_scan('ZAP Scan',        REPORTS_DIR / 'zap-report.json')
+    import_scan('Checkov Scan',    REPORTS_DIR / 'results_json.json')
 
     print('[push] Done.')
 
