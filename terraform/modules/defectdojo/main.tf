@@ -1,6 +1,6 @@
 # -----------------------------------------------------------------------
 # DefectDojo on ECS Fargate + RDS PostgreSQL + ElastiCache Redis
-# Uses defectdojo-django image with DD_WHITENOISE + collectstatic via env
+# defectdojo-django image, collectstatic runs via entrypoint wrapper
 # -----------------------------------------------------------------------
 
 data "aws_availability_zones" "available" {}
@@ -141,7 +141,7 @@ resource "aws_db_instance" "defectdojo" {
   deletion_protection    = false
 }
 
-# --- ElastiCache Redis (Celery broker) ---
+# --- ElastiCache Redis ---
 resource "aws_elasticache_subnet_group" "defectdojo" {
   name       = "${var.project}-${var.environment}-redis-subnet"
   subnet_ids = aws_subnet.private[*].id
@@ -201,9 +201,7 @@ resource "aws_iam_role_policy" "ecs_task_ssm" {
 }
 
 # --- ECS Task Definition ---
-# Two containers:
-#   1. init-static: runs collectstatic once, writes to shared volume
-#   2. defectdojo:  runs uWSGI, reads static files from shared volume via WhiteNoise
+# Single container using entrypoint.sh wrapper that runs collectstatic first
 resource "aws_ecs_task_definition" "defectdojo" {
   family                   = "${var.project}-${var.environment}"
   network_mode             = "awsvpc"
@@ -213,54 +211,15 @@ resource "aws_ecs_task_definition" "defectdojo" {
   execution_role_arn       = aws_iam_role.ecs_task_execution.arn
   task_role_arn            = aws_iam_role.ecs_task_execution.arn
 
-  # Shared ephemeral volume for static files
-  volume {
-    name = "static-files"
-  }
-
   container_definitions = jsonencode([
-    # Init container: collect static files into shared volume
-    {
-      name      = "init-static"
-      image     = "defectdojo/defectdojo-django:latest"
-      essential = false
-      command   = ["python", "/app/manage.py", "collectstatic", "--noinput"]
-      mountPoints = [{
-        sourceVolume  = "static-files"
-        containerPath = "/app/static"
-        readOnly      = false
-      }]
-      environment = [
-        { name = "DD_DATABASE_URL",      value = "postgresql://defectdojo:${var.db_password}@${aws_db_instance.defectdojo.address}:5432/defectdojo" },
-        { name = "DD_CELERY_BROKER_URL", value = "redis://${aws_elasticache_cluster.defectdojo.cache_nodes[0].address}:6379/0" },
-        { name = "DD_SECRET_KEY",        value = var.dd_secret_key },
-        { name = "DD_ALLOWED_HOSTS",     value = "*" },
-        { name = "DJANGO_SETTINGS_MODULE", value = "dojo.settings.settings" }
-      ]
-      logConfiguration = {
-        logDriver = "awslogs"
-        options = {
-          "awslogs-group"         = "/ecs/${var.project}-${var.environment}"
-          "awslogs-region"        = var.aws_region
-          "awslogs-stream-prefix" = "init-static"
-        }
-      }
-    },
-    # Main container: DefectDojo app
     {
       name      = "defectdojo"
       image     = "defectdojo/defectdojo-django:latest"
       essential = true
       portMappings = [{ containerPort = 8081, hostPort = 8081 }]
-      dependsOn = [{
-        containerName = "init-static"
-        condition     = "SUCCESS"
-      }]
-      mountPoints = [{
-        sourceVolume  = "static-files"
-        containerPath = "/app/static"
-        readOnly      = true
-      }]
+      # Override entrypoint to run collectstatic before uWSGI
+      entryPoint = ["/bin/bash", "-c"]
+      command    = ["python /app/manage.py collectstatic --noinput --clear 2>&1 && exec /entrypoint-uwsgi.sh"]
       environment = [
         { name = "DD_DATABASE_URL",          value = "postgresql://defectdojo:${var.db_password}@${aws_db_instance.defectdojo.address}:5432/defectdojo" },
         { name = "DD_CELERY_BROKER_URL",     value = "redis://${aws_elasticache_cluster.defectdojo.cache_nodes[0].address}:6379/0" },
