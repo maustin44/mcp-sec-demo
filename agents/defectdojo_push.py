@@ -32,7 +32,7 @@ def headers():
     return {'Authorization': f'Token {API_KEY}', 'Accept': 'application/json'}
 
 
-def import_scan(scan_type, file_path):
+def import_scan(scan_type, file_path, content_type='application/json'):
     if not file_path.exists():
         print(f'[push] {file_path} not found — skipping')
         return
@@ -50,13 +50,14 @@ def import_scan(scan_type, file_path):
                 'close_old_findings': 'true',
                 'minimum_severity': 'Info',
             },
-            files={'file': f},
+            files={'file': (file_path.name, f, content_type)},
             timeout=120,
         )
     if resp.status_code in (200, 201):
-        print(f'[push] ✓ Success: {resp.json().get("finding_count", "?")} findings')
+        count = resp.json().get('finding_count', resp.json().get('findings_count', '?'))
+        print(f'[push] ✓ Success: {count} findings')
     else:
-        print(f'[push] ✗ {resp.status_code}: {resp.text[:500]}')
+        print(f'[push] ✗ {resp.status_code}: {resp.text[:400]}')
 
 
 def main():
@@ -66,14 +67,14 @@ def main():
         print(f'[push] Auth failed: {r.status_code}'); sys.exit(1)
     print('[push] Connected OK')
 
-    # Print current scan type count
-    r2 = requests.get(f'{DEFECTDOJO_URL}/api/v2/test_types/?limit=5', headers=headers(), timeout=15)
-    total = r2.json().get('count', '?')
-    print(f'[push] DefectDojo has {total} scan types installed')
+    # ZAP — XML format required
+    import_scan('ZAP Scan', REPORTS_DIR / 'zap-report.xml', 'text/xml')
 
-    import_scan('NPM Audit Scan',  REPORTS_DIR / 'npm-audit.json')
-    import_scan('ZAP Scan',        REPORTS_DIR / 'zap-report.json')
-    import_scan('Checkov Scan',    REPORTS_DIR / 'results_json.json')
+    # NPM Audit — v1 format (converted in workflow)
+    import_scan('NPM Audit Scan', REPORTS_DIR / 'npm-audit.json', 'application/json')
+
+    # Checkov — confirmed working
+    import_scan('Checkov Scan', REPORTS_DIR / 'results_json.json', 'application/json')
 
     print('[push] Done.')
 
