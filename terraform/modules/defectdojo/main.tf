@@ -1,6 +1,6 @@
 # -----------------------------------------------------------------------
 # DefectDojo on ECS Fargate + RDS PostgreSQL + ElastiCache Redis
-# Uses defectdojo-django image with collectstatic on boot + DD_WHITENOISE
+# Uses defectdojo-django image with DD_WHITENOISE + collectstatic via env
 # -----------------------------------------------------------------------
 
 data "aws_availability_zones" "available" {}
@@ -201,6 +201,9 @@ resource "aws_iam_role_policy" "ecs_task_ssm" {
 }
 
 # --- ECS Task Definition ---
+# Two containers:
+#   1. init-static: runs collectstatic once, writes to shared volume
+#   2. defectdojo:  runs uWSGI, reads static files from shared volume via WhiteNoise
 resource "aws_ecs_task_definition" "defectdojo" {
   family                   = "${var.project}-${var.environment}"
   network_mode             = "awsvpc"
@@ -210,16 +213,54 @@ resource "aws_ecs_task_definition" "defectdojo" {
   execution_role_arn       = aws_iam_role.ecs_task_execution.arn
   task_role_arn            = aws_iam_role.ecs_task_execution.arn
 
+  # Shared ephemeral volume for static files
+  volume {
+    name = "static-files"
+  }
+
   container_definitions = jsonencode([
+    # Init container: collect static files into shared volume
+    {
+      name      = "init-static"
+      image     = "defectdojo/defectdojo-django:latest"
+      essential = false
+      command   = ["python", "/app/manage.py", "collectstatic", "--noinput"]
+      mountPoints = [{
+        sourceVolume  = "static-files"
+        containerPath = "/app/static"
+        readOnly      = false
+      }]
+      environment = [
+        { name = "DD_DATABASE_URL",      value = "postgresql://defectdojo:${var.db_password}@${aws_db_instance.defectdojo.address}:5432/defectdojo" },
+        { name = "DD_CELERY_BROKER_URL", value = "redis://${aws_elasticache_cluster.defectdojo.cache_nodes[0].address}:6379/0" },
+        { name = "DD_SECRET_KEY",        value = var.dd_secret_key },
+        { name = "DD_ALLOWED_HOSTS",     value = "*" },
+        { name = "DJANGO_SETTINGS_MODULE", value = "dojo.settings.settings" }
+      ]
+      logConfiguration = {
+        logDriver = "awslogs"
+        options = {
+          "awslogs-group"         = "/ecs/${var.project}-${var.environment}"
+          "awslogs-region"        = var.aws_region
+          "awslogs-stream-prefix" = "init-static"
+        }
+      }
+    },
+    # Main container: DefectDojo app
     {
       name      = "defectdojo"
       image     = "defectdojo/defectdojo-django:latest"
       essential = true
       portMappings = [{ containerPort = 8081, hostPort = 8081 }]
-      command = [
-        "/bin/bash", "-c",
-        "python manage.py collectstatic --noinput && /entrypoint-uwsgi.sh"
-      ]
+      dependsOn = [{
+        containerName = "init-static"
+        condition     = "SUCCESS"
+      }]
+      mountPoints = [{
+        sourceVolume  = "static-files"
+        containerPath = "/app/static"
+        readOnly      = true
+      }]
       environment = [
         { name = "DD_DATABASE_URL",          value = "postgresql://defectdojo:${var.db_password}@${aws_db_instance.defectdojo.address}:5432/defectdojo" },
         { name = "DD_CELERY_BROKER_URL",     value = "redis://${aws_elasticache_cluster.defectdojo.cache_nodes[0].address}:6379/0" },
@@ -228,7 +269,8 @@ resource "aws_ecs_task_definition" "defectdojo" {
         { name = "DD_DJANGO_ADMIN_ENABLED",  value = "true" },
         { name = "DD_SESSION_COOKIE_SECURE", value = "False" },
         { name = "DD_PORT",                  value = "8081" },
-        { name = "DD_WHITENOISE",            value = "True" }
+        { name = "DD_WHITENOISE",            value = "true" },
+        { name = "DD_STATIC_ROOT",           value = "/app/static" }
       ]
       logConfiguration = {
         logDriver = "awslogs"
@@ -257,7 +299,6 @@ resource "aws_lb" "defectdojo" {
   subnets            = aws_subnet.public[*].id
 }
 
-# Use name_prefix so Terraform never tries to delete/recreate by name
 resource "aws_lb_target_group" "defectdojo" {
   name_prefix = "dd-tg-"
   port        = 8081
