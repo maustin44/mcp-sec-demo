@@ -24,7 +24,9 @@
 //
 // ============================================================
 
-const API_BASE = 'http://localhost:3001/api'
+// In production, VITE_API_URL is set to the backend ALB URL by CI/CD.
+// In local development it falls back to localhost:3001.
+const API_BASE = (import.meta.env.VITE_API_URL || 'http://localhost:3001') + '/api'
 
 // --- Token management ---
 // We use sessionStorage (not localStorage) so the session clears
