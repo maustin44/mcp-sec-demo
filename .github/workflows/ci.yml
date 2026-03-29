@@ -22,8 +22,8 @@ jobs:
         with:
           node-version: 20
 
-      - name: Install app dependencies
-        working-directory: app
+      - name: Install frontend dependencies
+        working-directory: app/frontend
         run: npm install
 
       - name: SonarCloud scan
@@ -59,9 +59,6 @@ jobs:
   npm-audit:
     name: Dependency audit
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: app
     steps:
       - uses: actions/checkout@v4
 
@@ -69,14 +66,33 @@ jobs:
         with:
           node-version: 20
 
-      - run: npm install
-      - run: npm audit --json > npm-audit.json || true
+      # Audit frontend dependencies
+      - name: Install and audit frontend
+        working-directory: app/frontend
+        run: |
+          npm install
+          npm audit --json > npm-audit-frontend.json || true
+
+      # Audit backend dependencies
+      - name: Install and audit backend
+        working-directory: app/backend
+        run: |
+          npm install
+          npm audit --json > npm-audit-backend.json || true
 
       - uses: actions/upload-artifact@v4
         with:
-          name: npm-audit
-          path: app/npm-audit.json
+          name: npm-audit-frontend
+          path: app/frontend/npm-audit-frontend.json
           retention-days: 7
+        continue-on-error: true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: npm-audit-backend
+          path: app/backend/npm-audit-backend.json
+          retention-days: 7
+        continue-on-error: true
 
   gitleaks:
     name: Secret scan
@@ -88,14 +104,29 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         continue-on-error: true
 
-  deploy:
-    name: Deploy to S3 + CloudFront
+  deploy-frontend:
+    name: Build & Deploy Frontend to S3 + CloudFront
     runs-on: ubuntu-latest
     needs: [sonarcloud, checkov, npm-audit, gitleaks]
     if: github.ref == 'refs/heads/main'
 
     steps:
       - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install frontend dependencies
+        working-directory: app/frontend
+        run: npm install
+
+      - name: Build frontend
+        working-directory: app/frontend
+        run: npm run build
+        env:
+          # Point frontend at the backend API URL once backend is deployed
+          VITE_API_URL: ${{ secrets.VITE_API_URL || 'http://localhost:3001' }}
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -104,15 +135,14 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: us-east-1
 
-      - name: Sync to S3
+      - name: Deploy dist to S3
         run: |
-          aws s3 sync app/ s3://${{ secrets.S3_BUCKET_NAME }} \
-            --exclude "node_modules/*" \
-            --exclude "package*.json" \
-            --exclude "config.js" \
-            --exclude "server.js" \
-            --delete
-          aws s3 cp app/index.html s3://${{ secrets.S3_BUCKET_NAME }}/index.html \
+          aws s3 sync app/frontend/dist/ s3://${{ secrets.S3_BUCKET_NAME }} \
+            --delete \
+            --cache-control "public,max-age=31536000,immutable" \
+            --exclude "index.html"
+          # index.html always no-cache so users get latest version
+          aws s3 cp app/frontend/dist/index.html s3://${{ secrets.S3_BUCKET_NAME }}/index.html \
             --cache-control "no-cache,no-store,must-revalidate"
 
       - name: Invalidate CloudFront
