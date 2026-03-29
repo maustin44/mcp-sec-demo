@@ -8,6 +8,13 @@ on:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  AWS_REGION: us-east-1
+  ECR_REGISTRY: 023360292151.dkr.ecr.us-east-1.amazonaws.com
+  ECR_REPOSITORY: mcp-sec-demo-backend
+  ECS_CLUSTER: mcp-sec-demo-dev
+  ECS_SERVICE: mcp-sec-demo-backend
+  ECS_TASK_FAMILY: mcp-sec-demo-backend
+  BACKEND_URL: http://mcp-sec-demo-backend-alb-1274592971.us-east-1.elb.amazonaws.com
 
 jobs:
   sonarcloud:
@@ -66,14 +73,12 @@ jobs:
         with:
           node-version: 20
 
-      # Audit frontend dependencies
       - name: Install and audit frontend
         working-directory: app/frontend
         run: |
           npm install
           npm audit --json > npm-audit-frontend.json || true
 
-      # Audit backend dependencies
       - name: Install and audit backend
         working-directory: app/backend
         run: |
@@ -109,7 +114,6 @@ jobs:
     runs-on: ubuntu-latest
     needs: [sonarcloud, checkov, npm-audit, gitleaks]
     if: github.ref == 'refs/heads/main'
-
     steps:
       - uses: actions/checkout@v4
 
@@ -125,8 +129,7 @@ jobs:
         working-directory: app/frontend
         run: npm run build
         env:
-          # Point frontend at the backend API URL once backend is deployed
-          VITE_API_URL: ${{ secrets.VITE_API_URL || 'http://localhost:3001' }}
+          VITE_API_URL: ${{ env.BACKEND_URL }}
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -141,7 +144,6 @@ jobs:
             --delete \
             --cache-control "public,max-age=31536000,immutable" \
             --exclude "index.html"
-          # index.html always no-cache so users get latest version
           aws s3 cp app/frontend/dist/index.html s3://${{ secrets.S3_BUCKET_NAME }}/index.html \
             --cache-control "no-cache,no-store,must-revalidate"
 
@@ -150,3 +152,48 @@ jobs:
           aws cloudfront create-invalidation \
             --distribution-id ${{ secrets.CLOUDFRONT_DISTRIBUTION_ID }} \
             --paths "/*"
+
+  deploy-backend:
+    name: Build & Deploy Backend to ECS Fargate
+    runs-on: ubuntu-latest
+    needs: [sonarcloud, checkov, npm-audit, gitleaks]
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+
+      - name: Login to ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push Docker image
+        working-directory: app/backend
+        run: |
+          IMAGE_TAG=${{ github.sha }}
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+          docker tag $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG $ECR_REGISTRY/$ECR_REPOSITORY:latest
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+          echo "IMAGE=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_ENV
+
+      - name: Update ECS task definition with new image
+        id: render-task
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition-family: ${{ env.ECS_TASK_FAMILY }}
+          container-name: backend
+          image: ${{ env.IMAGE }}
+
+      - name: Deploy to ECS
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+        with:
+          task-definition: ${{ steps.render-task.outputs.task-definition }}
+          service: ${{ env.ECS_SERVICE }}
+          cluster: ${{ env.ECS_CLUSTER }}
+          wait-for-service-stability: true
