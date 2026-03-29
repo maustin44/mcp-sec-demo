@@ -1,0 +1,99 @@
+@import url('https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap');
+
+:root {
+  --bg-page: #f6f6f4;
+  --bg-surface: #ffffff;
+  --bg-surface-raised: #fafaf8;
+  --bg-input: #ffffff;
+  --bg-hover: #f0efed;
+  --border: #e2e0dc;
+  --border-strong: #cccac4;
+  --text-primary: #1a1a18;
+  --text-secondary: #5c5b57;
+  --text-tertiary: #8a8985;
+  --accent: #1a5c3a;
+  --accent-hover: #14472d;
+  --accent-subtle: #e8f2ec;
+  --accent-text: #1a5c3a;
+  --blue: #2563eb;
+  --blue-subtle: #eff4ff;
+  --red: #c4321a;
+  --red-subtle: #fef2f0;
+  --amber: #a16207;
+  --amber-subtle: #fefce8;
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --shadow-sm: 0 1px 2px rgba(0,0,0,0.05);
+  --shadow-md: 0 1px 3px rgba(0,0,0,0.08), 0 1px 2px rgba(0,0,0,0.04);
+  --font-sans: 'Instrument Sans', -apple-system, sans-serif;
+  --font-mono: 'IBM Plex Mono', monospace;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: var(--font-sans);
+  background: var(--bg-page);
+  color: var(--text-primary);
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}
+
+button {
+  font-family: var(--font-sans);
+  cursor: pointer;
+}
+
+input, select {
+  font-family: var(--font-sans);
+}
+
+code {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  background: var(--bg-hover);
+  padding: 2px 5px;
+  border-radius: 3px;
+  color: var(--text-primary);
+}
+
+/* ── Dark theme ── */
+[data-theme="dark"] {
+  --bg-page: #131316;
+  --bg-surface: #1a1a1e;
+  --bg-surface-raised: #202024;
+  --bg-input: #232328;
+  --bg-hover: #2a2a30;
+  --border: #333338;
+  --border-strong: #444449;
+  --text-primary: #e8e8e6;
+  --text-secondary: #a0a09c;
+  --text-tertiary: #6e6e6a;
+  --accent: #3da66e;
+  --accent-hover: #4dbb7f;
+  --accent-subtle: rgba(61,166,110,0.12);
+  --accent-text: #5ec792;
+  --blue: #5b93ff;
+  --blue-subtle: rgba(91,147,255,0.12);
+  --red: #e5563a;
+  --red-subtle: rgba(229,86,58,0.12);
+  --amber: #d4a017;
+  --amber-subtle: rgba(212,160,23,0.12);
+  --shadow-sm: 0 1px 2px rgba(0,0,0,0.3);
+  --shadow-md: 0 1px 3px rgba(0,0,0,0.4), 0 1px 2px rgba(0,0,0,0.2);
+}
