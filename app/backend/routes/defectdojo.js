@@ -1,16 +1,6 @@
 // ============================================================
 //  ToolVault — DefectDojo Integration Routes
 // ============================================================
-//
-//  Proxies requests to DefectDojo so the frontend never needs
-//  to know the DefectDojo URL or API key directly.
-//
-//  ENDPOINTS:
-//    GET /api/defectdojo/findings         — All active findings
-//    GET /api/defectdojo/findings/summary — Counts by severity
-//    GET /api/defectdojo/status           — Connection test
-//
-// ============================================================
 
 import { Router } from 'express'
 import { requireAuth } from '../middleware/auth.js'
@@ -18,15 +8,18 @@ import { getSetting } from './settings.js'
 
 const router = Router()
 
-// ============================================================
-//  Helper: call DefectDojo API
-// ============================================================
+function getDefectDojoConfig() {
+  // Read from DB first (set via Integrations page), fall back to env vars
+  // This makes it work both locally (via .env) and in production (via ECS env)
+  const url    = getSetting('defectdojo_url')     || process.env.DEFECTDOJO_URL     || ''
+  const apiKey = getSetting('defectdojo_api_key') || process.env.DEFECTDOJO_API_KEY || ''
+  return { url: url.replace(/\/$/, ''), apiKey }
+}
 
 async function ddFetch(endpoint) {
-  const url     = (getSetting('defectdojo_url') || '').replace(/\/$/, '')
-  const apiKey  = getSetting('defectdojo_api_key')
+  const { url, apiKey } = getDefectDojoConfig()
 
-  if (!url) throw new Error('DefectDojo URL not configured. Go to Integrations to set it.')
+  if (!url)    throw new Error('DefectDojo URL not configured. Go to Integrations to set it.')
   if (!apiKey) throw new Error('DefectDojo API key not configured. Go to Integrations to set it.')
 
   const response = await fetch(`${url}/api/v2${endpoint}`, {
@@ -48,44 +41,36 @@ async function ddFetch(endpoint) {
   return response.json()
 }
 
-// ============================================================
-//  Normalize a DefectDojo finding into our standard shape
-// ============================================================
-
 function normalizeFinding(f) {
   return {
-    id:          f.id,
-    title:       f.title,
-    severity:    (f.severity || 'Info').toLowerCase(),
-    description: f.description || '',
-    file:        f.file_path || '',
-    line:        f.line || null,
-    scanner:     f.test?.test_type?.name || 'Unknown',
-    status:      f.active ? 'active' : 'closed',
+    id:            f.id,
+    title:         f.title,
+    severity:      (f.severity || 'Info').toLowerCase(),
+    description:   f.description || '',
+    file:          f.file_path || '',
+    line:          f.line || null,
+    scanner:       f.test?.test_type?.name || 'Unknown',
+    status:        f.active ? 'active' : 'closed',
     falsePositive: f.false_p || false,
-    cwe:         f.cwe || null,
-    url:         f.url || '',
-    notesCount:  f.notes?.length || 0,
-    foundDate:   f.date || '',
-    engagement:  f.test?.engagement?.name || '',
+    cwe:           f.cwe || null,
+    url:           f.url || '',
+    notesCount:    f.notes?.length || 0,
+    foundDate:     f.date || '',
+    engagement:    f.test?.engagement?.name || '',
   }
 }
 
-// ============================================================
-//  Routes
-// ============================================================
-
-// GET /api/defectdojo/status — test the connection
+// GET /api/defectdojo/status
 router.get('/status', requireAuth, async (req, res) => {
   try {
-    const data = await ddFetch('/users/?limit=1')
+    await ddFetch('/users/?limit=1')
     res.json({ connected: true, message: 'DefectDojo connection successful.' })
   } catch (err) {
     res.json({ connected: false, message: err.message })
   }
 })
 
-// GET /api/defectdojo/findings — all active findings ordered by severity
+// GET /api/defectdojo/findings
 router.get('/findings', requireAuth, async (req, res) => {
   try {
     const limit      = parseInt(req.query.limit) || 50
@@ -98,26 +83,20 @@ router.get('/findings', requireAuth, async (req, res) => {
 
     const data = await ddFetch(endpoint)
     const findings = (data.results || []).map(normalizeFinding)
-
-    res.json({
-      findings,
-      total: data.count || findings.length,
-    })
+    res.json({ findings, total: data.count || findings.length })
   } catch (err) {
     console.error('[DefectDojo] Error fetching findings:', err.message)
     res.status(502).json({ error: err.message })
   }
 })
 
-// GET /api/defectdojo/findings/summary — counts by severity for dashboard
+// GET /api/defectdojo/findings/summary
 router.get('/findings/summary', requireAuth, async (req, res) => {
   try {
-    // Fetch all active findings (up to 200) to build summary
     const data = await ddFetch('/findings/?active=true&false_p=false&limit=200&ordering=-severity')
     const findings = data.results || []
 
     const summary = { critical: 0, high: 0, medium: 0, low: 0, info: 0, total: 0 }
-
     for (const f of findings) {
       const sev = (f.severity || 'Info').toLowerCase()
       if (sev in summary) summary[sev]++
@@ -125,13 +104,12 @@ router.get('/findings/summary', requireAuth, async (req, res) => {
       summary.total++
     }
 
-    // Determine overall risk level
     let riskLevel = 'clean'
-    if (summary.critical > 0)     riskLevel = 'critical'
-    else if (summary.high > 0)    riskLevel = 'high'
-    else if (summary.medium > 0)  riskLevel = 'medium'
-    else if (summary.low > 0)     riskLevel = 'low'
-    else if (summary.total > 0)   riskLevel = 'info'
+    if (summary.critical > 0)    riskLevel = 'critical'
+    else if (summary.high > 0)   riskLevel = 'high'
+    else if (summary.medium > 0) riskLevel = 'medium'
+    else if (summary.low > 0)    riskLevel = 'low'
+    else if (summary.total > 0)  riskLevel = 'info'
 
     res.json({ summary, riskLevel })
   } catch (err) {
