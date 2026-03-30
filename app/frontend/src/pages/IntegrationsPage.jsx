@@ -1,21 +1,30 @@
 import { useState, useEffect } from 'react'
 import { apiFetch } from '../services/api'
+import { testDefectDojoConnection } from '../services/defectdojo'
 import './IntegrationsPage.css'
 
 function IntegrationsPage() {
-  const [org, setOrg] = useState('')
-  const [token, setToken] = useState('')
+  // GitHub state
+  const [org, setOrg]                   = useState('')
+  const [token, setToken]               = useState('')
   const [tokenPreview, setTokenPreview] = useState('')
-  const [hasToken, setHasToken] = useState(false)
-  const [loading, setLoading] = useState(true)
-  const [saving, setSaving] = useState(false)
-  const [testing, setTesting] = useState(false)
-  const [message, setMessage] = useState(null)
+  const [hasToken, setHasToken]         = useState(false)
+
+  // DefectDojo state
+  const [ddUrl, setDdUrl]               = useState('')
+  const [ddKey, setDdKey]               = useState('')
+  const [ddKeyPreview, setDdKeyPreview] = useState('')
+  const [hasApiKey, setHasApiKey]       = useState(false)
+  const [ddTestResult, setDdTestResult] = useState(null)
+  const [ddTesting, setDdTesting]       = useState(false)
+
+  const [loading, setLoading]   = useState(true)
+  const [saving, setSaving]     = useState(false)
+  const [testing, setTesting]   = useState(false)
+  const [message, setMessage]   = useState(null)
   const [testResult, setTestResult] = useState(null)
 
-  useEffect(() => {
-    loadSettings()
-  }, [])
+  useEffect(() => { loadSettings() }, [])
 
   async function loadSettings() {
     setLoading(true)
@@ -24,6 +33,11 @@ function IntegrationsPage() {
       setOrg(data.github.org)
       setHasToken(data.github.hasToken)
       setTokenPreview(data.github.tokenPreview)
+      if (data.defectdojo) {
+        setDdUrl(data.defectdojo.url || '')
+        setHasApiKey(data.defectdojo.hasApiKey)
+        setDdKeyPreview(data.defectdojo.apiKeyPreview || '')
+      }
     } catch (err) {
       setMessage({ type: 'error', text: err.message })
     } finally {
@@ -36,20 +50,38 @@ function IntegrationsPage() {
     setSaving(true)
     setMessage(null)
     setTestResult(null)
-
     try {
       const body = { github_org: org }
-      // Only send token if the user typed a new one
-      if (token) {
-        body.github_token = token
-      }
+      if (token) body.github_token = token
       await apiFetch('/settings/integrations', {
         method: 'PUT',
         body: JSON.stringify(body),
       })
-
-      setMessage({ type: 'success', text: 'Settings saved.' })
+      setMessage({ type: 'success', text: 'GitHub settings saved.' })
       setToken('')
+      loadSettings()
+    } catch (err) {
+      setMessage({ type: 'error', text: err.message })
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function handleSaveDefectDojo(e) {
+    e.preventDefault()
+    setSaving(true)
+    setMessage(null)
+    setDdTestResult(null)
+    try {
+      const body = {}
+      if (ddUrl) body.defectdojo_url = ddUrl
+      if (ddKey) body.defectdojo_api_key = ddKey
+      await apiFetch('/settings/integrations', {
+        method: 'PUT',
+        body: JSON.stringify(body),
+      })
+      setMessage({ type: 'success', text: 'DefectDojo settings saved.' })
+      setDdKey('')
       loadSettings()
     } catch (err) {
       setMessage({ type: 'error', text: err.message })
@@ -62,16 +94,26 @@ function IntegrationsPage() {
     setTesting(true)
     setTestResult(null)
     setMessage(null)
-
     try {
-      const data = await apiFetch('/settings/integrations/test', {
-        method: 'POST',
-      })
+      const data = await apiFetch('/settings/integrations/test', { method: 'POST' })
       setTestResult(data)
     } catch (err) {
       setTestResult({ success: false, error: err.message })
     } finally {
       setTesting(false)
+    }
+  }
+
+  async function handleTestDefectDojo() {
+    setDdTesting(true)
+    setDdTestResult(null)
+    try {
+      const data = await testDefectDojoConnection()
+      setDdTestResult(data)
+    } catch (err) {
+      setDdTestResult({ connected: false, message: err.message })
+    } finally {
+      setDdTesting(false)
     }
   }
 
@@ -131,21 +173,16 @@ function IntegrationsPage() {
           <div className="form-field">
             <label htmlFor="github-org">Organization or username</label>
             <input
-              id="github-org"
-              type="text"
-              value={org}
+              id="github-org" type="text" value={org}
               onChange={(e) => setOrg(e.target.value)}
               placeholder="e.g. google, facebook, mmill210-lang"
             />
             <span className="form-hint">The GitHub organization or personal username whose repos will appear in ToolVault.</span>
           </div>
-
           <div className="form-field">
             <label htmlFor="github-token">Personal access token</label>
             <input
-              id="github-token"
-              type="password"
-              value={token}
+              id="github-token" type="password" value={token}
               onChange={(e) => setToken(e.target.value)}
               placeholder={hasToken ? `Current: ${tokenPreview}` : 'ghp_... or github_pat_...'}
             />
@@ -154,14 +191,9 @@ function IntegrationsPage() {
               <a href="https://github.com/settings/tokens" target="_blank" rel="noopener noreferrer">Generate one here</a>
             </span>
           </div>
-
           <div className="form-actions">
-            <button type="submit" className="save-btn" disabled={saving}>
-              {saving ? 'Saving...' : 'Save settings'}
-            </button>
-            <button type="button" className="test-btn" onClick={handleTest} disabled={testing || !org}>
-              {testing ? 'Testing...' : 'Test connection'}
-            </button>
+            <button type="submit" className="save-btn" disabled={saving}>{saving ? 'Saving...' : 'Save settings'}</button>
+            <button type="button" className="test-btn" onClick={handleTest} disabled={testing || !org}>{testing ? 'Testing...' : 'Test connection'}</button>
           </div>
         </form>
 
@@ -178,16 +210,79 @@ function IntegrationsPage() {
             ) : (
               <div className="test-error">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
-                <div>
-                  <strong>Connection failed</strong>
-                  <p>{testResult.error}</p>
-                </div>
+                <div><strong>Connection failed</strong><p>{testResult.error}</p></div>
               </div>
             )}
           </div>
         )}
       </div>
 
+      {/* DefectDojo Integration */}
+      <div className="panel" style={{ marginTop: '20px' }}>
+        <div className="panel-head">
+          <div className="integration-head">
+            <div className="integration-icon" style={{ background: '#1a1a2e', color: '#e94560', border: '1px solid #e94560', borderRadius: '8px', width: '36px', height: '36px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '16px', fontWeight: 'bold' }}>
+              DD
+            </div>
+            <div>
+              <h2>DefectDojo</h2>
+              <span className="integration-subtitle">Vulnerability management and AI triage findings</span>
+            </div>
+          </div>
+          <div className="connection-status">
+            {hasApiKey && ddUrl ? (
+              <span className="status-pill connected">Configured</span>
+            ) : (
+              <span className="status-pill disconnected">Not configured</span>
+            )}
+          </div>
+        </div>
+
+        <form className="integration-form" onSubmit={handleSaveDefectDojo}>
+          <div className="form-field">
+            <label htmlFor="dd-url">DefectDojo URL</label>
+            <input
+              id="dd-url" type="text" value={ddUrl}
+              onChange={(e) => setDdUrl(e.target.value)}
+              placeholder="http://your-defectdojo-instance.com"
+            />
+            <span className="form-hint">The base URL of your DefectDojo instance (no trailing slash).</span>
+          </div>
+          <div className="form-field">
+            <label htmlFor="dd-key">API Key</label>
+            <input
+              id="dd-key" type="password" value={ddKey}
+              onChange={(e) => setDdKey(e.target.value)}
+              placeholder={hasApiKey ? `Current: ${ddKeyPreview}` : 'Your DefectDojo API v2 key'}
+            />
+            <span className="form-hint">
+              Found in DefectDojo under your username → <strong>API v2 key</strong>.
+            </span>
+          </div>
+          <div className="form-actions">
+            <button type="submit" className="save-btn" disabled={saving}>{saving ? 'Saving...' : 'Save settings'}</button>
+            <button type="button" className="test-btn" onClick={handleTestDefectDojo} disabled={ddTesting || (!hasApiKey && !ddKey)}>
+              {ddTesting ? 'Testing...' : 'Test connection'}
+            </button>
+          </div>
+        </form>
+
+        {ddTestResult && (
+          <div className={`test-result ${ddTestResult.connected ? 'success' : 'error'}`}>
+            {ddTestResult.connected ? (
+              <div className="test-success">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M22 11.08V12a10 10 0 11-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+                <div><strong>DefectDojo connected</strong><p>{ddTestResult.message}</p></div>
+              </div>
+            ) : (
+              <div className="test-error">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
+                <div><strong>Connection failed</strong><p>{ddTestResult.message}</p></div>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
     </div>
   )
 }
