@@ -5,10 +5,19 @@ on:
     - cron: '0 8 * * 1'
     - cron: '0 8 * * 4'
   workflow_dispatch:
+    inputs:
+      target_repo:
+        description: 'Repository name to scan (optional)'
+        required: false
+        default: ''
+      target_url:
+        description: 'Target URL for DAST scan (optional, overrides default)'
+        required: false
+        default: ''
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-  TARGET_URL: https://dc4u52ktze490.cloudfront.net
+  TARGET_URL: ${{ github.event.inputs.target_url || 'https://dc4u52ktze490.cloudfront.net' }}
 
 jobs:
   sonarcloud:
@@ -75,15 +84,13 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: app
+        working-directory: app/frontend
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 20
       - run: npm install
-      # Use --audit-level=none to get output even with no vulnerabilities
-      # pipe through node to convert to v1 format that DefectDojo supports
       - name: Run npm audit (v1 compatible format)
         run: |
           npm audit --json 2>/dev/null | node -e "
@@ -92,9 +99,6 @@ jobs:
           process.stdin.on('end', () => {
             try {
               const data = JSON.parse(Buffer.concat(chunks).toString());
-              // DefectDojo expects npm audit v1 format
-              // If already v1 (no auditReportVersion field), use as-is
-              // If v2+, convert to minimal v1 structure
               if (!data.auditReportVersion) {
                 process.stdout.write(JSON.stringify(data));
               } else {
@@ -103,8 +107,7 @@ jobs:
                   metadata: {
                     vulnerabilities: data.metadata ? data.metadata.vulnerabilities : {},
                     dependencies: data.metadata ? data.metadata.dependencies : 0,
-                    devDependencies: 0,
-                    optionalDependencies: 0,
+                    devDependencies: 0, optionalDependencies: 0,
                     totalDependencies: data.metadata ? data.metadata.dependencies : 0
                   }
                 };
@@ -114,11 +117,8 @@ jobs:
                     for (const via of (vuln.via || [])) {
                       if (typeof via === 'object' && via.url) {
                         v1.advisories[id] = {
-                          id: id,
-                          module_name: name,
-                          severity: vuln.severity || 'unknown',
-                          title: via.title || name,
-                          url: via.url || '',
+                          id, module_name: name, severity: vuln.severity || 'unknown',
+                          title: via.title || name, url: via.url || '',
                           recommendation: 'Update ' + name,
                           findings: [{ version: vuln.range || 'unknown', paths: [name] }]
                         };
@@ -138,7 +138,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: npm-audit-scheduled
-          path: app/npm-audit.json
+          path: app/frontend/npm-audit.json
           retention-days: 30
 
   push-to-defectdojo:
