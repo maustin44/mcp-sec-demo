@@ -13,6 +13,7 @@ import authRoutes        from './routes/auth.js'
 import githubRoutes      from './routes/github.js'
 import settingsRoutes    from './routes/settings.js'
 import defectdojoRoutes  from './routes/defectdojo.js'
+import scanTriggerRoutes from './routes/scan_trigger.js'
 
 if (!process.env.JWT_SECRET) {
   console.error('\n  ERROR: JWT_SECRET is not set in .env')
@@ -36,6 +37,7 @@ app.use('/api/auth',        authRoutes)
 app.use('/api/github',      githubRoutes)
 app.use('/api/settings',    settingsRoutes)
 app.use('/api/defectdojo',  defectdojoRoutes)
+app.use('/api/scan',        scanTriggerRoutes)
 
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', message: 'ToolVault backend is running.', timestamp: new Date().toISOString() })
